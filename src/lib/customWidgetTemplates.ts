@@ -1,4 +1,9 @@
-export type WidgetTemplateKind = 'text' | 'reminders';
+export type WidgetTemplateKind =
+  | 'text'
+  | 'reminders'
+  | 'clock'
+  | 'weather'
+  | 'calendar';
 
 export interface CustomWidgetTemplate {
   /** Value for the template `<select>`. */
@@ -18,6 +23,36 @@ export interface CustomWidgetTemplate {
 
 /** Add-widget presets: text panels + extra Reminders instance. */
 export const CUSTOM_WIDGET_TEMPLATES: CustomWidgetTemplate[] = [
+  {
+    id: 'clock-core',
+    mirrorWidgetId: 'clock',
+    label: 'Clock',
+    kind: 'clock',
+    x: 10,
+    y: 10,
+    width: 35,
+    height: 15,
+  },
+  {
+    id: 'weather-core',
+    mirrorWidgetId: 'weather',
+    label: 'Weather',
+    kind: 'weather',
+    x: 55,
+    y: 10,
+    width: 35,
+    height: 15,
+  },
+  {
+    id: 'calendar-core',
+    mirrorWidgetId: 'calendar',
+    label: 'Calendar',
+    kind: 'calendar',
+    x: 10,
+    y: 75,
+    width: 35,
+    height: 15,
+  },
   {
     id: 'sticky-note',
     mirrorWidgetId: 'sticky_note',

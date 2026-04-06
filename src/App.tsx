@@ -1,22 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  DndContext, 
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent
-} from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-  useSortable
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { 
   Clock, 
   Cloud, 
   Calendar, 
@@ -35,19 +18,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
-import { 
-  collection, 
-  addDoc, 
-  query, 
-  where, 
-  onSnapshot, 
-  orderBy, 
-  serverTimestamp,
-  deleteDoc,
-  doc
-} from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from './firebase';
 import { cn } from './lib/utils';
 import type { Widget } from './lib/mirrorLayout';
 import {
@@ -65,14 +35,35 @@ import { mirrorGetWidgets, mirrorPutWidgets } from './lib/mirrorApi';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
+import { createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
+import { triggerMirrorCapture } from './features/camera/cameraApi';
+import {
+  listWardrobeItems,
+  removeWardrobeItem,
+  uploadWardrobeItem,
+  type WardrobeItem,
+} from './features/wardrobe/wardrobeApi';
 
 const MIRROR_HTTP_STORAGE_KEY = 'mirror_http_base';
+const MIRROR_WS_STORAGE_KEY = 'mirror_ws_url';
 
-interface WardrobeItem {
-  id: string;
-  name: string;
-  imageUrl: string;
-  category?: string;
+function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+}
+
+function mirrorHttpFallbackFromWindow(): string {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8002';
+  const host = window.location.hostname;
+  return isLoopbackHost(host) ? 'http://127.0.0.1:8002' : `http://${host}:8002`;
+}
+
+function parseHost(rawBase: string): string {
+  try {
+    return new URL(rawBase).hostname;
+  } catch {
+    return '';
+  }
 }
 
 // --- Components ---
@@ -274,10 +265,11 @@ const MirrorWidget = ({
 };
 
 export default function App() {
-  // Dev mode: bypass Google sign-in for local mirror configuration tests.
-  // Wardrobe (Firestore/Storage) remains disabled unless you wire auth back in.
-  const userId = "local-dev";
-  const enableWardrobe = false;
+  const userId = 'local-dev';
+  const sessionIdRef = useRef(createSessionId());
+  const [activeTab, setActiveTab] = useState<'layout' | 'camera' | 'wardrobe' | 'connection'>(
+    'layout'
+  );
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
     return loadLayoutCache() ?? hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
@@ -292,17 +284,22 @@ export default function App() {
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.hostname}:8002/ws/control`;
+    const fallback = `${proto}//${window.location.hostname}:8002/ws/control`;
+    try {
+      return localStorage.getItem(MIRROR_WS_STORAGE_KEY) ?? fallback;
+    } catch {
+      return fallback;
+    }
   });
   const [showSettings, setShowSettings] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const [mirrorHttpBase, setMirrorHttpBase] = useState(() => {
-    if (typeof window === 'undefined') return 'http://127.0.0.1:8002';
+    if (typeof window === 'undefined') return mirrorHttpFallbackFromWindow();
     try {
-      return localStorage.getItem(MIRROR_HTTP_STORAGE_KEY) ?? 'http://127.0.0.1:8002';
+      return localStorage.getItem(MIRROR_HTTP_STORAGE_KEY) ?? mirrorHttpFallbackFromWindow();
     } catch {
-      return 'http://127.0.0.1:8002';
+      return mirrorHttpFallbackFromWindow();
     }
   });
   const backendByWidgetIdRef = useRef<Map<string, WidgetConfigOut>>(new Map());
@@ -312,23 +309,52 @@ export default function App() {
   const mirrorHttpRef = useRef(mirrorHttpBase);
   mirrorHttpRef.current = mirrorHttpBase;
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
+  const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
 
   useEffect(() => {
-    if (showSettings) setMirrorHttpDraft(mirrorHttpBase);
-  }, [showSettings, mirrorHttpBase]);
+    if (!showSettings) return;
+    setMirrorHttpDraft(mirrorHttpBase);
+    setWsUrlDraft(wsUrl);
+  }, [showSettings, mirrorHttpBase, wsUrl]);
 
   const loadLayoutFromMirror = useCallback(async (opts?: { silent?: boolean }) => {
-    const base = mirrorHttpBase.trim();
-    if (!base) return;
+    const configuredBase = mirrorHttpBase.trim();
+    if (!configuredBase) return;
     setHttpSyncState('pulling');
+    const candidates = [configuredBase];
+    const configuredHost = parseHost(configuredBase);
+    const fallbackBase = mirrorHttpFallbackFromWindow();
+    if (configuredHost && isLoopbackHost(configuredHost) && fallbackBase !== configuredBase) {
+      candidates.push(fallbackBase);
+    }
     try {
-      const rows = await mirrorGetWidgets(base);
+      let rows: WidgetConfigOut[] | null = null;
+      let resolvedBase = configuredBase;
+      for (const base of candidates) {
+        try {
+          rows = await mirrorGetWidgets(base);
+          resolvedBase = base;
+          break;
+        } catch {
+          // Try next candidate base before surfacing unreachable.
+        }
+      }
+      if (!rows) throw new Error('all mirror API candidates failed');
       backendByWidgetIdRef.current = new Map(
         dedupeWidgetApiRows(rows).map((r) => [normalizeWidgetTypeId(r.widget_id), r])
       );
       const next = widgetsFromApi(rows);
       setWidgets(next);
       saveLayoutCache(next);
+      if (resolvedBase !== configuredBase) {
+        setMirrorHttpBase(resolvedBase);
+        mirrorHttpRef.current = resolvedBase;
+        try {
+          localStorage.setItem(MIRROR_HTTP_STORAGE_KEY, resolvedBase);
+        } catch {
+          /* ignore */
+        }
+      }
       if (!opts?.silent) toast.success('Loaded layout from mirror');
       setHttpSyncState('saved');
       window.setTimeout(() => setHttpSyncState('idle'), 2000);
@@ -381,7 +407,7 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [widgets]);
 
-  // --- WebSocket (actions like capture; layout uses HTTP when mirror HTTP base is set) ---
+  // --- WebSocket contract v2 ---
   useEffect(() => {
     const connectWs = () => {
       if (socketRef.current) socketRef.current.close();
@@ -392,26 +418,13 @@ export default function App() {
 
         socket.onopen = () => {
           setWsConnected(true);
-          toast.success('Connected to Mirror');
+          toast.success('Connected to mirror control channel');
           if (!mirrorHttpRef.current.trim()) {
-            const w = widgetsRef.current;
-            socket.send(
-              JSON.stringify({
-                type: 'SYNC_STATE',
-                widgets: w.map((wi) => ({
-                  id: wi.id,
-                  type: wi.type || 'builtin',
-                  name: wi.name,
-                  x: wi.x,
-                  y: wi.y,
-                  width: wi.width,
-                  height: wi.height,
-                  config: wi.config || {},
-                })),
-                action: { kind: 'INITIAL_SYNC' },
-                meta: { source: 'config-app', ts: new Date().toISOString() },
-              })
+            const initialEnvelope = createWidgetsSyncEnvelope(
+              sessionIdRef.current,
+              widgetsRef.current
             );
+            socket.send(JSON.stringify(initialEnvelope));
           }
         };
 
@@ -428,12 +441,23 @@ export default function App() {
 
         socket.onmessage = (event) => {
           const data = JSON.parse(event.data);
-          console.log('Received from Mirror:', data);
-          if (data.type === 'CAPTURE_COMPLETE') {
-            toast.success('Photo captured!');
+          if (data.type === 'CAMERA_COUNTDOWN_TICK') {
+            const remaining = Number(data?.payload?.remaining);
+            if (Number.isFinite(remaining)) setCountdown(remaining);
+            return;
           }
-          if (data.type === 'SYNC_APPLIED') {
-            toast.success('Mirror applied layout');
+          if (data.type === 'CAMERA_CAPTURED') {
+            setCountdown(null);
+            toast.success('Photo captured');
+            return;
+          }
+          if (data.type === 'CAMERA_ERROR') {
+            setCountdown(null);
+            toast.error(String(data?.payload?.message ?? 'Camera error'));
+            return;
+          }
+          if (data.type === 'WIDGETS_SYNC_APPLIED') {
+            toast.success('Mirror applied layout update');
           }
         };
       } catch {
@@ -449,81 +473,84 @@ export default function App() {
     };
   }, [wsUrl]);
 
-  const sendToMirror = (type: string, payload: Record<string, unknown>) => {
+  const sendEnvelopeToMirror = (envelope: Record<string, unknown>) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type, ...payload }));
+      socketRef.current.send(JSON.stringify(envelope));
     } else {
       toast.error('Mirror not connected');
     }
   };
 
-  const syncStateToMirror = useCallback((currentWidgets?: Widget[], action?: Record<string, unknown> | null) => {
+  const syncStateToMirror = useCallback((currentWidgets?: Widget[]) => {
     const widgetsToSync = currentWidgets ?? widgetsRef.current;
-    sendToMirror('SYNC_STATE', {
-      widgets: widgetsToSync.map((w) => ({
-        id: w.id,
-        type: w.type || 'builtin',
-        name: w.name,
-        x: w.x,
-        y: w.y,
-        width: w.width,
-        height: w.height,
-        config: w.config || {},
-      })),
-      action: action ?? null,
-      meta: {
-        source: 'config-app',
-        ts: new Date().toISOString(),
-      },
-    });
+    sendEnvelopeToMirror(createWidgetsSyncEnvelope(sessionIdRef.current, widgetsToSync));
   }, []);
 
-  // --- Wardrobe Sync ---
+  // --- Wardrobe API sync ---
   useEffect(() => {
-    if (!enableWardrobe) {
+    const base = mirrorHttpBase.trim();
+    if (!base) {
       setWardrobe([]);
       return;
     }
-
-    // NOTE: Wardrobe requires authenticated access (Firestore rules).
-    // This dev-mode implementation intentionally disables it.
-  }, [enableWardrobe]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const items = await listWardrobeItems(base, userId);
+        if (!cancelled) setWardrobe(items);
+      } catch {
+        if (!cancelled) setWardrobe([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mirrorHttpBase, userId]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!enableWardrobe) {
-      toast.error("Wardrobe disabled in dev mode (requires Google auth).");
+    const base = mirrorHttpBase.trim();
+    if (!base) {
+      toast.error('Set Mirror HTTP base before uploading');
       return;
     }
 
     setIsUploading(true);
     try {
-      const storageRef = ref(storage, `wardrobe/${userId}/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      
-      await addDoc(collection(db, 'wardrobe'), {
-        name: file.name.split('.')[0],
-        imageUrl: url,
-        userId: userId,
-        createdAt: serverTimestamp()
+      const item = await uploadWardrobeItem(base, userId, file);
+      setWardrobe((prev) => [item, ...prev]);
+      toast.success('Item added to wardrobe');
+      sendEnvelopeToMirror({
+        type: 'WARDROBE_UPDATED',
+        version: 2,
+        sessionId: sessionIdRef.current,
+        timestamp: new Date().toISOString(),
+        payload: { user_id: userId },
       });
-      toast.success("Item added to wardrobe");
-    } catch (err) {
-      toast.error("Upload failed");
+    } catch {
+      toast.error('Upload failed');
     } finally {
       setIsUploading(false);
     }
   };
 
-  const deleteItem = async (id: string) => {
+  const deleteItem = async (id: number) => {
     try {
-      if (!enableWardrobe) return;
-      await deleteDoc(doc(db, 'wardrobe', id));
-      toast.success("Item removed");
-    } catch (err) {
-      toast.error("Delete failed");
+      const base = mirrorHttpBase.trim();
+      if (!base) return;
+      await removeWardrobeItem(base, id);
+      setWardrobe((prev) => prev.filter((item) => item.id !== id));
+      toast.success('Item removed');
+      sendEnvelopeToMirror({
+        type: 'WARDROBE_UPDATED',
+        version: 2,
+        sessionId: sessionIdRef.current,
+        timestamp: new Date().toISOString(),
+        payload: { user_id: userId },
+      });
+    } catch {
+      toast.error('Delete failed');
     }
   };
 
@@ -563,10 +590,7 @@ export default function App() {
     if (updatedWidget) {
       schedulePushLayoutToMirror(updatedWidgets);
       if (!mirrorHttpBase.trim()) {
-        syncStateToMirror(updatedWidgets, {
-          kind: 'UPDATE_WIDGET_CONFIG',
-          id: updatedWidget.id,
-        });
+        syncStateToMirror(updatedWidgets);
       }
 
       if (activeWidgetConfig?.id === id) {
@@ -593,30 +617,41 @@ export default function App() {
     if (!t) return;
     const id = t.mirrorWidgetId;
     const existing = widgets.find((w) => w.id === id);
-    const widget: Widget =
-      t.kind === 'reminders'
-        ? {
-            id,
-            type: 'builtin',
-            name: 'Reminders',
-            icon: mirrorWidgetIcon(id),
-            x: existing?.x ?? t.x,
-            y: existing?.y ?? t.y,
-            width: existing?.width ?? t.width,
-            height: existing?.height ?? t.height,
-            config: { limit: 5, showCompleted: false },
-          }
-        : {
-            id,
-            type: 'builtin',
-            name: t.title ?? t.label,
-            icon: mirrorWidgetIcon(id),
-            x: existing?.x ?? t.x,
-            y: existing?.y ?? t.y,
-            width: existing?.width ?? t.width,
-            height: existing?.height ?? t.height,
-            config: { title: t.title ?? '', text: t.text ?? '', templateId: t.id },
-          };
+    let config: Record<string, unknown>;
+    let name = t.title ?? t.label;
+    switch (t.kind) {
+      case 'clock':
+        name = 'Clock';
+        config = { format: '24h', showSeconds: false };
+        break;
+      case 'weather':
+        name = 'Weather';
+        config = { location: 'San Francisco', unit: 'metric' };
+        break;
+      case 'calendar':
+        name = 'Calendar';
+        config = { view: 'month', showEvents: true };
+        break;
+      case 'reminders':
+        name = 'Reminders';
+        config = { limit: 5, showCompleted: false };
+        break;
+      default:
+        config = { title: t.title ?? '', text: t.text ?? '', templateId: t.id };
+        break;
+    }
+
+    const widget: Widget = {
+      id,
+      type: 'builtin',
+      name,
+      icon: mirrorWidgetIcon(id),
+      x: existing?.x ?? t.x,
+      y: existing?.y ?? t.y,
+      width: existing?.width ?? t.width,
+      height: existing?.height ?? t.height,
+      config,
+    };
     const updated = existing ? widgets.map((w) => (w.id === id ? widget : w)) : [...widgets, widget];
     setWidgets(updated);
     schedulePushLayoutToMirror(updated);
@@ -627,18 +662,20 @@ export default function App() {
   };
 
   // --- Camera Trigger ---
-  const triggerCapture = () => {
-    setCountdown(3);
-    const interval = setInterval(() => {
-      setCountdown(prev => {
-        if (prev === 1) {
-          clearInterval(interval);
-          syncStateToMirror(widgetsRef.current, { kind: 'TRIGGER_CAPTURE' });
-          return null;
-        }
-        return prev ? prev - 1 : null;
-      });
-    }, 1000);
+  const triggerCapture = async () => {
+    const base = mirrorHttpBase.trim();
+    if (!base) {
+      toast.error('Set Mirror HTTP base to trigger camera capture');
+      return;
+    }
+    try {
+      setCountdown(3);
+      await triggerMirrorCapture(base, sessionIdRef.current);
+      toast.success('Capture request sent');
+    } catch {
+      setCountdown(null);
+      toast.error('Could not trigger capture');
+    }
   };
 
   return (
@@ -669,6 +706,29 @@ export default function App() {
           <Settings size={20} />
         </button>
       </header>
+
+      <nav className="max-w-7xl mx-auto mb-6">
+        <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1 gap-1">
+          {[
+            { id: 'layout', label: 'Layout' },
+            { id: 'camera', label: 'Camera' },
+            { id: 'wardrobe', label: 'Wardrobe' },
+            { id: 'connection', label: 'Connection' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id as typeof activeTab)}
+              className={cn(
+                'px-4 py-2 rounded-full text-xs tracking-wide transition-colors',
+                activeTab === tab.id ? 'bg-white text-black' : 'text-white/60 hover:text-white'
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </nav>
 
       {/* Settings Modal */}
       <AnimatePresence>
@@ -715,8 +775,8 @@ export default function App() {
                   <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">WebSocket URL</label>
                   <input 
                     type="text" 
-                    value={wsUrl}
-                    onChange={(e) => setWsUrl(e.target.value)}
+                    value={wsUrlDraft}
+                    onChange={(e) => setWsUrlDraft(e.target.value)}
                     placeholder="wss://..."
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
                   />
@@ -729,12 +789,15 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     const v = mirrorHttpDraft.trim();
+                    const nextWs = wsUrlDraft.trim();
                     try {
                       localStorage.setItem(MIRROR_HTTP_STORAGE_KEY, v);
+                      localStorage.setItem(MIRROR_WS_STORAGE_KEY, nextWs);
                     } catch {
                       /* ignore */
                     }
                     setMirrorHttpBase(v);
+                    if (nextWs) setWsUrl(nextWs);
                     setShowSettings(false);
                   }}
                   className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all"
@@ -911,6 +974,7 @@ export default function App() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
           
           {/* Left Column: Mirror Canvas */}
+          {(activeTab === 'layout' || activeTab === 'connection') && (
           <section className="lg:col-span-5 xl:col-span-4">
             <div className="flex items-center justify-between mb-4 px-2">
               <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Mirror Screen</h2>
@@ -960,18 +1024,19 @@ export default function App() {
               <div className="absolute inset-0 rounded-[2.5rem] shadow-[inset_0_0_80px_rgba(0,0,0,0.8)] pointer-events-none" />
             </div>
           </section>
+          )}
 
           {/* Right Column: Controls & Wardrobe */}
           <div className="lg:col-span-7 xl:col-span-8 space-y-12">
-            <WidgetSummaryPanel
+            {(activeTab === 'layout' || activeTab === 'connection') && <WidgetSummaryPanel
               widgets={widgets}
               mirrorHttpBase={mirrorHttpBase}
               httpSyncState={httpSyncState}
               onRefreshFromMirror={() => void loadLayoutFromMirror({ silent: false })}
               onRemoveWidget={handleRemoveWidget}
-            />
+            />}
             {/* Camera Section */}
-            <section>
+            {(activeTab === 'layout' || activeTab === 'camera') && <section>
               <div className="flex items-center justify-between mb-4 px-2">
                 <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Camera</h2>
               </div>
@@ -1015,10 +1080,10 @@ export default function App() {
                   </button>
                 </div>
               </GlassCard>
-            </section>
+            </section>}
 
             {/* Wardrobe Section */}
-            <section>
+            {(activeTab === 'layout' || activeTab === 'wardrobe') && <section>
               <div className="flex items-center justify-between mb-4 px-2">
                 <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Wardrobe</h2>
                 <label className="cursor-pointer text-white/40 hover:text-white transition-colors flex items-center gap-2 text-xs">
@@ -1044,15 +1109,22 @@ export default function App() {
                   >
                     <GlassCard 
                       onClick={() =>
-                        syncStateToMirror(widgetsRef.current, {
-                          kind: 'SELECT_CLOTHING',
-                          imageUrl: item.imageUrl,
+                        sendEnvelopeToMirror({
+                          type: 'WARDROBE_UPDATED',
+                          version: 2,
+                          sessionId: sessionIdRef.current,
+                          timestamp: new Date().toISOString(),
+                          payload: {
+                            user_id: userId,
+                            selected_image_url: item.image_url,
+                            selected_item_id: item.id,
+                          },
                         })
                       }
                       className="p-0 overflow-hidden aspect-square cursor-pointer"
                     >
                       <img 
-                        src={item.imageUrl} 
+                        src={item.image_url} 
                         alt={item.name}
                         className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
                         referrerPolicy="no-referrer"
@@ -1074,11 +1146,24 @@ export default function App() {
               {wardrobe.length === 0 && !isUploading && (
                 <div className="text-center py-12 border-2 border-dashed border-white/5 rounded-2xl">
                   <p className="text-white/20 text-sm font-light">
-                    Wardrobe disabled in dev mode (requires Google auth)
+                    No wardrobe items yet. Upload one to start virtual try-on.
                   </p>
                 </div>
               )}
-            </section>
+            </section>}
+
+            {activeTab === 'connection' && (
+              <section>
+                <GlassCard className="space-y-3">
+                  <h3 className="text-lg font-light">Connection Diagnostics</h3>
+                  <p className="text-sm text-white/50">WebSocket: {wsUrl}</p>
+                  <p className="text-sm text-white/50">HTTP: {mirrorHttpBase || 'not configured'}</p>
+                  <p className="text-sm text-white/50">
+                    Status: {wsConnected ? 'connected' : 'disconnected'}
+                  </p>
+                </GlassCard>
+              </section>
+            )}
           </div>
         </div>
       </main>
@@ -1093,7 +1178,7 @@ export default function App() {
              </div>
              <div className="w-px h-3 bg-white/10" />
              <span className="text-[10px] uppercase tracking-widest font-bold text-white/30">
-               Dev Mode (No Auth)
+               Mobile Companion
              </span>
           </div>
         </div>

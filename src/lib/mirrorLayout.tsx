@@ -1,5 +1,17 @@
 import React from 'react';
-import { Clock, Cloud, Calendar, ListTodo, StickyNote, Quote, ListChecks, Home, Type } from 'lucide-react';
+import {
+  Clock,
+  Cloud,
+  Calendar,
+  ListTodo,
+  StickyNote,
+  Quote,
+  ListChecks,
+  Home,
+  Type,
+  Newspaper,
+  Sparkles,
+} from 'lucide-react';
 import type { WidgetConfigOut, WidgetConfigUpdate } from '../types/mirror';
 import { clampFreeformPercentBox, normalizeFreeformFromStorage } from './freeformNormalize';
 import { standaloneTextWidgetBaseId } from './customWidgetTemplates';
@@ -73,6 +85,8 @@ function displayName(widgetId: string): string {
     today_list: 'Today’s list',
     household: 'Household',
     minimal_text: 'Minimal text',
+    news: 'News',
+    virtual_try_on: 'Virtual try-on',
   };
   return map[base] ?? map[widgetId] ?? widgetId;
 }
@@ -122,6 +136,10 @@ export function mirrorWidgetIcon(widgetId: string): React.ReactNode {
       return <Home size={18} />;
     case 'minimal_text':
       return <Type size={18} />;
+    case 'news':
+      return <Newspaper size={18} />;
+    case 'virtual_try_on':
+      return <Sparkles size={18} />;
     default:
       return <ListTodo size={18} />;
   }
