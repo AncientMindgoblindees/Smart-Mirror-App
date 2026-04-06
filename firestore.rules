@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: wardrobe
+    // Document ID: auto-generated
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - imageUrl: string (required, valid URL)
+    //   - userId: string (required, matches auth.uid)
+    //   - category: string (optional)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidWardrobeItem(data) {
+      return data.keys().hasAll(['name', 'imageUrl', 'userId', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.imageUrl is string && data.imageUrl.matches("^https?://.*") &&
+             data.userId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    match /wardrobe/{itemId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidWardrobeItem(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && isValidWardrobeItem(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

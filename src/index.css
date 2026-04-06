@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Native `<select>` / `<option>`: readable menu on dark pages */
+.companion-select,
+.companion-select option {
+  color: #000;
+  background-color: #fff;
+}
+
+.companion-select {
+  border-color: rgb(212 212 216);
+}

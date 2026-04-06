@@ -1,0 +1,24 @@
+{
+  "entities": {
+    "WardrobeItem": {
+      "title": "Wardrobe Item",
+      "description": "A piece of clothing in the digital wardrobe.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" }
+      },
+      "required": ["name", "imageUrl", "userId"]
+    }
+  },
+  "firestore": {
+    "/wardrobe/{itemId}": {
+      "schema": "WardrobeItem",
+      "description": "Collection of clothing items."
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Smart-Mirror Config",
+  "description": "Configuration app for a Raspberry Pi 5 Smart-Mirror with virtual wardrobe and real-time sync.",
+  "requestFramePermissions": ["camera"]
+}
