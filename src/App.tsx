@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   Clock, 
   Cloud, 
@@ -36,6 +36,9 @@ import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSumma
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
 import { createSessionId, createWidgetsSyncEnvelope, createDevicePairEnvelope, getDeviceId } from './shared/ws/contracts';
+import { FluidDropdown } from './components/ui/fluid-dropdown';
+import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } from './lib/widgetSizePresets';
+import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
 import { triggerMirrorCapture } from './features/camera/cameraApi';
 import {
   listWardrobeItems,
@@ -66,6 +69,46 @@ function parseHost(rawBase: string): string {
   }
 }
 
+const SIZE_DROPDOWN_ITEMS: Array<{ id: WidgetSizePreset; label: string }> = [
+  { id: 'small', label: 'Small' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'large', label: 'Large' },
+];
+
+const TEMPLATE_CATEGORY_ITEMS: Array<{
+  id: 'all' | WidgetTemplateCategory;
+  label: string;
+}> = [
+  { id: 'all', label: 'All' },
+  { id: 'lifestyle', label: 'Lifestyle' },
+  { id: 'desk', label: 'Desk' },
+  { id: 'tech', label: 'Tech' },
+  { id: 'home', label: 'Home' },
+];
+
+const CLOCK_FORMAT_ITEMS = [
+  { id: '12h', label: '12-hour' },
+  { id: '24h', label: '24-hour' },
+] as const;
+
+const WEATHER_UNIT_ITEMS = [
+  { id: 'metric', label: 'Metric (°C)' },
+  { id: 'imperial', label: 'Imperial (°F)' },
+] as const;
+
+const CALENDAR_VIEW_ITEMS = [
+  { id: 'day', label: 'Day' },
+  { id: 'week', label: 'Week' },
+  { id: 'month', label: 'Month' },
+] as const;
+
+function cloneWidgetForSettingsDraft(w: Widget): Widget {
+  return {
+    ...w,
+    config: { ...w.config },
+  };
+}
+
 // --- Components ---
 
 const GlassCard = ({ children, className, onClick }: { children: React.ReactNode; className?: string; onClick?: () => void }) => (
@@ -84,12 +127,14 @@ const GlassCard = ({ children, className, onClick }: { children: React.ReactNode
 const MirrorWidget = ({
   widget,
   onUpdate,
+  onResizeCommit,
   onConfigOpen,
   onRemove,
   containerRef
 }: {
   widget: Widget;
   onUpdate: (id: string, updates: Partial<Widget>) => void;
+  onResizeCommit: (id: string, width: number, height: number) => void;
   onConfigOpen: (widget: Widget) => void;
   onRemove: (id: string) => void;
   containerRef: React.RefObject<HTMLDivElement>;
@@ -170,6 +215,19 @@ const MirrorWidget = ({
 
       const onUp = (ev: PointerEvent) => {
         if (ev.pointerId !== pointerId) return;
+        if (mode === 'resize') {
+          const dxPercent = ((ev.clientX - startX) / startRect.width) * MAX_PERCENT;
+          const dyPercent = ((ev.clientY - startY) / startRect.height) * MAX_PERCENT;
+          const width = Math.min(
+            Math.max(MIN_WIDGET_PERCENT, origin.width + dxPercent),
+            Math.max(MIN_WIDGET_PERCENT, MAX_PERCENT - origin.x)
+          );
+          const height = Math.min(
+            Math.max(MIN_WIDGET_PERCENT, origin.height + dyPercent),
+            Math.max(MIN_WIDGET_PERCENT, MAX_PERCENT - origin.y)
+          );
+          onResizeCommit(widget.id, width, height);
+        }
         clearInteraction();
       };
 
@@ -193,7 +251,7 @@ const MirrorWidget = ({
       e.preventDefault();
       e.stopPropagation();
     },
-    [clearInteraction, containerRef, onUpdate, widget.height, widget.id, widget.width, widget.x, widget.y]
+    [clearInteraction, containerRef, onResizeCommit, onUpdate, widget.height, widget.id, widget.width, widget.x, widget.y]
   );
 
   return (
@@ -278,8 +336,10 @@ export default function App() {
   });
   const [httpSyncState, setHttpSyncState] = useState<HttpSyncState>('idle');
   const [customTemplateId, setCustomTemplateId] = useState(CUSTOM_WIDGET_TEMPLATES[0]?.id ?? 'sticky-note');
+  const [activeTemplateCategory, setActiveTemplateCategory] = useState<'all' | WidgetTemplateCategory>('all');
   const mirrorRef = useRef<HTMLDivElement>(null);
-  const [activeWidgetConfig, setActiveWidgetConfig] = useState<Widget | null>(null);
+  /** Local draft while the settings modal is open; committed to `widgets` + mirror only on Done. */
+  const [widgetSettingsDraft, setWidgetSettingsDraft] = useState<Widget | null>(null);
   const [wardrobe, setWardrobe] = useState<WardrobeItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -312,6 +372,21 @@ export default function App() {
   mirrorHttpRef.current = mirrorHttpBase;
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
+
+  const filteredTemplates = useMemo(() => {
+    if (activeTemplateCategory === 'all') return CUSTOM_WIDGET_TEMPLATES;
+    return CUSTOM_WIDGET_TEMPLATES.filter((t) => t.category === activeTemplateCategory);
+  }, [activeTemplateCategory]);
+  const templateDropdownItems = useMemo(
+    () => filteredTemplates.map((tmpl) => ({ id: tmpl.id, label: tmpl.label })),
+    [filteredTemplates]
+  );
+
+  useEffect(() => {
+    if (!filteredTemplates.some((t) => t.id === customTemplateId)) {
+      setCustomTemplateId(filteredTemplates[0]?.id ?? CUSTOM_WIDGET_TEMPLATES[0]?.id ?? 'sticky-note');
+    }
+  }, [filteredTemplates, customTemplateId]);
 
   useEffect(() => {
     if (!showSettings) return;
@@ -399,7 +474,7 @@ export default function App() {
           setHttpSyncState('error');
           window.setTimeout(() => setHttpSyncState('idle'), 3000);
         }
-      }, 500);
+      }, 220);
     },
     []
   );
@@ -584,7 +659,14 @@ export default function App() {
 
   // --- Widget Handlers ---
   const handleWidgetUpdate = (id: string, updates: Partial<Widget>) => {
-    const updatedWidgets = widgets.map((w) => (w.id === id ? { ...w, ...updates } : w));
+    const updatedWidgets = widgets.map((w) => {
+      if (w.id !== id) return w;
+      const next = { ...w, ...updates };
+      if (updates.width !== undefined || updates.height !== undefined) {
+        next.sizePreset = inferWidgetSizePreset(next.width, next.height);
+      }
+      return next;
+    });
     setWidgets(updatedWidgets);
     schedulePushLayoutToMirror(updatedWidgets);
     if (!mirrorHttpBase.trim()) {
@@ -592,40 +674,70 @@ export default function App() {
     }
   };
 
-  const handleWidgetConfigUpdate = (id: string, config: Record<string, unknown>) => {
-    const updatedWidgets = widgets.map((w) => {
-      if (w.id !== id) return w;
-      const nextConfig = { ...w.config, ...config };
-      let name = w.name;
-      if (w.type === 'custom' && typeof nextConfig.title === 'string') {
+  const handleWidgetResizeCommit = (id: string, width: number, height: number) => {
+    const preset = inferWidgetSizePreset(width, height);
+    const dims = WIDGET_SIZE_PRESETS[preset];
+    handleWidgetUpdate(id, { width: dims.width, height: dims.height, sizePreset: preset });
+  };
+
+  const patchWidgetSettingsDraftConfig = (config: Record<string, unknown>) => {
+    setWidgetSettingsDraft((prev) => {
+      if (!prev) return prev;
+      const nextConfig = { ...prev.config, ...config };
+      let name = prev.name;
+      if (prev.type === 'custom' && typeof nextConfig.title === 'string') {
         const t = nextConfig.title.trim();
         name = t || 'Custom widget';
       } else {
-        const base = standaloneTextWidgetBaseId(w.id);
+        const base = standaloneTextWidgetBaseId(prev.id);
         if (base && typeof nextConfig.title === 'string') {
           const t = nextConfig.title.trim();
           name =
             t ||
             CUSTOM_WIDGET_TEMPLATES.find((x) => x.mirrorWidgetId === base)?.label ||
-            w.name;
+            prev.name;
         }
       }
-      return { ...w, config: nextConfig, name };
+      return { ...prev, config: nextConfig, name };
     });
-    setWidgets(updatedWidgets);
+  };
 
-    const updatedWidget = updatedWidgets.find((w) => w.id === id);
-    if (updatedWidget) {
-      schedulePushLayoutToMirror(updatedWidgets);
-      if (!mirrorHttpBase.trim()) {
-        syncStateToMirror(updatedWidgets);
-      }
+  const patchWidgetSettingsDraftSizePreset = (preset: WidgetSizePreset) => {
+    setWidgetSettingsDraft((prev) => {
+      if (!prev) return prev;
+      const dims = WIDGET_SIZE_PRESETS[preset];
+      return { ...prev, width: dims.width, height: dims.height, sizePreset: preset };
+    });
+  };
 
-      if (activeWidgetConfig?.id === id) {
-        setActiveWidgetConfig(updatedWidget);
+  const commitWidgetSettingsDraft = () => {
+    if (!widgetSettingsDraft) return;
+    const w = widgetSettingsDraft;
+    const id = w.id;
+    let name = w.name;
+    const nextConfig = w.config;
+    if (w.type === 'custom' && typeof nextConfig.title === 'string') {
+      const t = nextConfig.title.trim();
+      name = t || 'Custom widget';
+    } else {
+      const base = standaloneTextWidgetBaseId(w.id);
+      if (base && typeof nextConfig.title === 'string') {
+        const t = nextConfig.title.trim();
+        name =
+          t ||
+          CUSTOM_WIDGET_TEMPLATES.find((x) => x.mirrorWidgetId === base)?.label ||
+          w.name;
       }
     }
-    toast.success('Widget config updated');
+    const finalWidget: Widget = { ...w, name, config: { ...nextConfig } };
+    const updatedWidgets = widgets.map((widget) => (widget.id === id ? finalWidget : widget));
+    setWidgets(updatedWidgets);
+    schedulePushLayoutToMirror(updatedWidgets);
+    if (!mirrorHttpBase.trim()) {
+      syncStateToMirror(updatedWidgets);
+    }
+    setWidgetSettingsDraft(null);
+    toast.success('Widget settings saved');
   };
 
   const handleRemoveWidget = (id: string) => {
@@ -635,7 +747,7 @@ export default function App() {
     if (!mirrorHttpBase.trim()) {
       syncStateToMirror(updated);
     }
-    if (activeWidgetConfig?.id === id) setActiveWidgetConfig(null);
+    if (widgetSettingsDraft?.id === id) setWidgetSettingsDraft(null);
     toast.success('Widget removed. Mirror UI picks up changes from the server after save.');
   };
 
@@ -678,6 +790,7 @@ export default function App() {
       y: existing?.y ?? t.y,
       width: existing?.width ?? t.width,
       height: existing?.height ?? t.height,
+      sizePreset: inferWidgetSizePreset(existing?.width ?? t.width, existing?.height ?? t.height),
       config,
     };
     const updated = existing ? widgets.map((w) => (w.id === id ? widget : w)) : [...widgets, widget];
@@ -851,13 +964,13 @@ export default function App() {
 
       {/* Widget Config Modal */}
       <AnimatePresence>
-        {activeWidgetConfig && (
+        {widgetSettingsDraft && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setActiveWidgetConfig(null)}
+              onClick={() => setWidgetSettingsDraft(null)}
               className="absolute inset-0 bg-black/80 backdrop-blur-sm"
             />
             <motion.div 
@@ -871,114 +984,121 @@ export default function App() {
               <div className="relative z-10">
               <div className="flex items-center justify-between mb-8">
                 <div className="flex items-center gap-3">
-                  <div className="text-white/50">{activeWidgetConfig.icon}</div>
-                  <h3 className="text-xl font-medium font-[var(--font-display)]">{activeWidgetConfig.name} Settings</h3>
+                  <div className="text-white/50">{widgetSettingsDraft.icon}</div>
+                  <h3 className="text-xl font-medium font-[var(--font-display)]">{widgetSettingsDraft.name} Settings</h3>
                 </div>
-                <button onClick={() => setActiveWidgetConfig(null)} className="text-white/30 hover:text-white/80 transition-colors">
+                <button onClick={() => setWidgetSettingsDraft(null)} className="text-white/30 hover:text-white/80 transition-colors">
                   <X size={20} />
                 </button>
               </div>
               
               <div className="space-y-6">
-                {activeWidgetConfig.id === 'clock' && (
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Widget Size</label>
+                  <FluidDropdown
+                    items={SIZE_DROPDOWN_ITEMS}
+                    value={widgetSettingsDraft.sizePreset ?? inferWidgetSizePreset(widgetSettingsDraft.width, widgetSettingsDraft.height)}
+                    onChange={(preset) => patchWidgetSettingsDraftSizePreset(preset)}
+                    className="max-w-none"
+                  />
+                </div>
+                {widgetSettingsDraft.id === 'clock' && (
                   <>
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Time Format</label>
-                      <select 
-                        value={activeWidgetConfig.config.format}
-                        onChange={(e) => handleWidgetConfigUpdate(activeWidgetConfig.id, { format: e.target.value })}
-                        className="companion-select w-full rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-zinc-500 transition-colors"
-                      >
-                        <option value="12h">12-hour</option>
-                        <option value="24h">24-hour</option>
-                      </select>
+                      <FluidDropdown
+                        items={[...CLOCK_FORMAT_ITEMS]}
+                        value={String(widgetSettingsDraft.config.format ?? '24h') as '12h' | '24h'}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ format: value })}
+                        className="max-w-none"
+                      />
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-sm">Show Seconds</span>
                       <button 
-                        onClick={() => handleWidgetConfigUpdate(activeWidgetConfig.id, { showSeconds: !activeWidgetConfig.config.showSeconds })}
+                        type="button"
+                        onClick={() =>
+                          patchWidgetSettingsDraftConfig({ showSeconds: !widgetSettingsDraft.config.showSeconds })
+                        }
                         className={cn(
                           "w-10 h-5 rounded-full transition-colors relative",
-                          activeWidgetConfig.config.showSeconds ? "bg-white" : "bg-white/10"
+                          widgetSettingsDraft.config.showSeconds ? "bg-white" : "bg-white/10"
                         )}
                       >
                         <motion.div 
-                          animate={{ x: activeWidgetConfig.config.showSeconds ? 20 : 2 }}
-                          className={cn("absolute top-1 w-3 h-3 rounded-full", activeWidgetConfig.config.showSeconds ? "bg-black" : "bg-white/40")} 
+                          animate={{ x: widgetSettingsDraft.config.showSeconds ? 20 : 2 }}
+                          className={cn("absolute top-1 w-3 h-3 rounded-full", widgetSettingsDraft.config.showSeconds ? "bg-black" : "bg-white/40")} 
                         />
                       </button>
                     </div>
                   </>
                 )}
 
-                {activeWidgetConfig.id === 'weather' && (
+                {widgetSettingsDraft.id === 'weather' && (
                   <>
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Location</label>
                       <input 
                         type="text" 
-                        value={activeWidgetConfig.config.location}
-                        onChange={(e) => handleWidgetConfigUpdate(activeWidgetConfig.id, { location: e.target.value })}
+                        value={String(widgetSettingsDraft.config.location ?? '')}
+                        onChange={(e) => patchWidgetSettingsDraftConfig({ location: e.target.value })}
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
                       />
                     </div>
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Unit</label>
-                      <select 
-                        value={activeWidgetConfig.config.unit}
-                        onChange={(e) => handleWidgetConfigUpdate(activeWidgetConfig.id, { unit: e.target.value })}
-                        className="companion-select w-full rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-zinc-500 transition-colors"
-                      >
-                        <option value="metric">Metric (°C)</option>
-                        <option value="imperial">Imperial (°F)</option>
-                      </select>
+                      <FluidDropdown
+                        items={[...WEATHER_UNIT_ITEMS]}
+                        value={String(widgetSettingsDraft.config.unit ?? 'metric') as 'metric' | 'imperial'}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ unit: value })}
+                        className="max-w-none"
+                      />
                     </div>
                   </>
                 )}
 
-                {activeWidgetConfig.id === 'calendar' && (
+                {widgetSettingsDraft.id === 'calendar' && (
                   <>
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">View Mode</label>
-                      <select 
-                        value={activeWidgetConfig.config.view}
-                        onChange={(e) => handleWidgetConfigUpdate(activeWidgetConfig.id, { view: e.target.value })}
-                        className="companion-select w-full rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-zinc-500 transition-colors"
-                      >
-                        <option value="day">Day</option>
-                        <option value="week">Week</option>
-                        <option value="month">Month</option>
-                      </select>
+                      <FluidDropdown
+                        items={[...CALENDAR_VIEW_ITEMS]}
+                        value={String(widgetSettingsDraft.config.view ?? 'month') as 'day' | 'week' | 'month'}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ view: value })}
+                        className="max-w-none"
+                      />
                     </div>
                   </>
                 )}
 
-                {mirrorWidgetBaseId(activeWidgetConfig.id) === 'reminders' && (
+                {mirrorWidgetBaseId(widgetSettingsDraft.id) === 'reminders' && (
                   <>
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Item Limit</label>
                       <input 
                         type="number" 
-                        value={Number(activeWidgetConfig.config.limit ?? 5)}
-                        onChange={(e) => handleWidgetConfigUpdate(activeWidgetConfig.id, { limit: parseInt(e.target.value, 10) })}
+                        value={Number(widgetSettingsDraft.config.limit ?? 5)}
+                        onChange={(e) =>
+                          patchWidgetSettingsDraftConfig({ limit: parseInt(e.target.value, 10) })
+                        }
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
                       />
                     </div>
                   </>
                 )}
 
-                {(activeWidgetConfig.type === 'custom' ||
-                  standaloneTextWidgetBaseId(activeWidgetConfig.id)) && (
+                {(widgetSettingsDraft.type === 'custom' ||
+                  standaloneTextWidgetBaseId(widgetSettingsDraft.id)) && (
                   <>
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Title</label>
                       <input
                         type="text"
-                        value={String(activeWidgetConfig.config.title ?? activeWidgetConfig.name)}
+                        value={String(widgetSettingsDraft.config.title ?? widgetSettingsDraft.name)}
                         onChange={(e) =>
-                          handleWidgetConfigUpdate(activeWidgetConfig.id, {
+                          patchWidgetSettingsDraftConfig({
                             title: e.target.value,
-                            text: activeWidgetConfig.config.text ?? '',
+                            text: widgetSettingsDraft.config.text ?? '',
                           })
                         }
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
@@ -987,10 +1107,10 @@ export default function App() {
                     <div className="space-y-2">
                       <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Body text</label>
                       <textarea
-                        value={String(activeWidgetConfig.config.text ?? '')}
+                        value={String(widgetSettingsDraft.config.text ?? '')}
                         onChange={(e) =>
-                          handleWidgetConfigUpdate(activeWidgetConfig.id, {
-                            title: String(activeWidgetConfig.config.title ?? activeWidgetConfig.name),
+                          patchWidgetSettingsDraftConfig({
+                            title: String(widgetSettingsDraft.config.title ?? widgetSettingsDraft.name),
                             text: e.target.value,
                           })
                         }
@@ -1001,7 +1121,8 @@ export default function App() {
                 )}
                 
                 <button 
-                  onClick={() => setActiveWidgetConfig(null)}
+                  type="button"
+                  onClick={commitWidgetSettingsDraft}
                   className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all active:scale-[0.98]"
                 >
                   Done
@@ -1022,17 +1143,20 @@ export default function App() {
             <div className="flex items-center justify-between mb-4 px-2">
               <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Mirror Screen</h2>
               <div className="flex flex-wrap items-center gap-2">
-                <select
+                <FluidDropdown
+                  items={TEMPLATE_CATEGORY_ITEMS}
+                  value={activeTemplateCategory}
+                  onChange={(value) => setActiveTemplateCategory(value as 'all' | WidgetTemplateCategory)}
+                  className="max-w-[180px]"
+                  buttonClassName="h-8 text-[10px]"
+                />
+                <FluidDropdown
+                  items={templateDropdownItems}
                   value={customTemplateId}
-                  onChange={(e) => setCustomTemplateId(e.target.value)}
-                  className="companion-select text-[10px] rounded-lg px-2 py-1 max-w-[200px] border focus:outline-none focus:border-zinc-500"
-                >
-                  {CUSTOM_WIDGET_TEMPLATES.map((tmpl) => (
-                    <option key={tmpl.id} value={tmpl.id}>
-                      {tmpl.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setCustomTemplateId}
+                  className="max-w-[200px]"
+                  buttonClassName="h-8 text-[10px]"
+                />
                 <button
                   type="button"
                   onClick={addCustomWidgetFromTemplate}
@@ -1057,7 +1181,8 @@ export default function App() {
                   widget={widget} 
                   containerRef={mirrorRef}
                   onUpdate={handleWidgetUpdate}
-                  onConfigOpen={(w) => setActiveWidgetConfig(w)}
+                  onResizeCommit={handleWidgetResizeCommit}
+                  onConfigOpen={(w) => setWidgetSettingsDraft(cloneWidgetForSettingsDraft(w))}
                   onRemove={handleRemoveWidget}
                 />
               ))}

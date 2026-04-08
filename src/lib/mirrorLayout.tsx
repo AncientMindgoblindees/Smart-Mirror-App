@@ -15,6 +15,8 @@ import {
 import type { WidgetConfigOut, WidgetConfigUpdate } from '../types/mirror';
 import { clampFreeformPercentBox, normalizeFreeformFromStorage } from './freeformNormalize';
 import { standaloneTextWidgetBaseId } from './customWidgetTemplates';
+import type { WidgetSizePreset } from './widgetSizePresets';
+import { WIDGET_SIZE_PRESETS } from './widgetSizePresets';
 
 export interface MirrorWidget {
   id: string;
@@ -25,6 +27,7 @@ export interface MirrorWidget {
   y: number;
   width: number;
   height: number;
+  sizePreset?: WidgetSizePreset;
   config: Record<string, any>;
 }
 
@@ -60,7 +63,13 @@ export function dedupeWidgetApiRows(rows: WidgetConfigOut[]): WidgetConfigOut[] 
   return [...m.values()].sort((a, b) => a.id - b.id);
 }
 
-function readFreeform(row: WidgetConfigOut): { x: number; y: number; width: number; height: number } {
+function readFreeform(row: WidgetConfigOut): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  sizePreset: WidgetSizePreset;
+} {
   const raw = row.config_json?.freeform;
   return normalizeFreeformFromStorage(raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined);
 }
@@ -95,10 +104,42 @@ function displayName(widgetId: string): string {
 export type WidgetLayoutSnapshot = Omit<MirrorWidget, 'icon'>;
 
 export const DEFAULT_WIDGET_SNAPSHOTS: WidgetLayoutSnapshot[] = [
-  { id: 'clock', type: 'builtin', name: 'Clock', x: 10, y: 10, width: 35, height: 15, config: { format: '24h', showSeconds: false } },
-  { id: 'weather', type: 'builtin', name: 'Weather', x: 55, y: 10, width: 35, height: 15, config: { location: 'San Francisco', unit: 'metric' } },
-  { id: 'calendar', type: 'builtin', name: 'Calendar', x: 10, y: 75, width: 35, height: 15, config: { view: 'month', showEvents: true } },
-  { id: 'reminders', type: 'builtin', name: 'Reminders', x: 55, y: 75, width: 35, height: 15, config: { limit: 5, showCompleted: false } },
+  {
+    id: 'clock',
+    type: 'builtin',
+    name: 'Clock',
+    x: 10,
+    y: 10,
+    ...WIDGET_SIZE_PRESETS.medium,
+    config: { format: '24h', showSeconds: false },
+  },
+  {
+    id: 'weather',
+    type: 'builtin',
+    name: 'Weather',
+    x: 55,
+    y: 10,
+    ...WIDGET_SIZE_PRESETS.medium,
+    config: { location: 'San Francisco', unit: 'metric' },
+  },
+  {
+    id: 'calendar',
+    type: 'builtin',
+    name: 'Calendar',
+    x: 10,
+    y: 75,
+    ...WIDGET_SIZE_PRESETS.medium,
+    config: { view: 'month', showEvents: true },
+  },
+  {
+    id: 'reminders',
+    type: 'builtin',
+    name: 'Reminders',
+    x: 55,
+    y: 75,
+    ...WIDGET_SIZE_PRESETS.medium,
+    config: { limit: 5, showCompleted: false },
+  },
 ];
 
 export function hydrateWidgetsFromSnapshots(items: WidgetLayoutSnapshot[]): MirrorWidget[] {
@@ -170,6 +211,7 @@ export function widgetsFromApi(rows: WidgetConfigOut[]): MirrorWidget[] {
       y: ff.y,
       width: ff.width,
       height: ff.height,
+      sizePreset: ff.sizePreset,
       config: cfg,
     };
   });
@@ -190,6 +232,9 @@ export function buildWidgetPutPayload(
     const cfg: Record<string, unknown> = { ...fromServer, ...w.config };
     delete cfg.freeform;
     cfg.freeform = clampFreeformPercentBox({ x: w.x, y: w.y, width: w.width, height: w.height });
+    if (w.sizePreset) {
+      (cfg.freeform as Record<string, unknown>).sizePreset = w.sizePreset;
+    }
     return {
       id: ex?.id ?? undefined,
       widget_id: wid,

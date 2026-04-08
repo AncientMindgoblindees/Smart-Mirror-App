@@ -5,6 +5,8 @@ export type WidgetTemplateKind =
   | 'weather'
   | 'calendar';
 
+export type WidgetTemplateCategory = 'lifestyle' | 'desk' | 'tech' | 'home';
+
 export interface CustomWidgetTemplate {
   /** Value for the template `<select>`. */
   id: string;
@@ -12,6 +14,7 @@ export interface CustomWidgetTemplate {
   mirrorWidgetId: string;
   label: string;
   kind: WidgetTemplateKind;
+  category: WidgetTemplateCategory;
   x: number;
   y: number;
   width: number;
@@ -28,65 +31,71 @@ export const CUSTOM_WIDGET_TEMPLATES: CustomWidgetTemplate[] = [
     mirrorWidgetId: 'clock',
     label: 'Clock',
     kind: 'clock',
+    category: 'desk',
     x: 10,
     y: 10,
-    width: 35,
-    height: 15,
+    width: 32,
+    height: 20,
   },
   {
     id: 'weather-core',
     mirrorWidgetId: 'weather',
     label: 'Weather',
     kind: 'weather',
+    category: 'home',
     x: 55,
     y: 10,
-    width: 35,
-    height: 15,
+    width: 32,
+    height: 20,
   },
   {
     id: 'calendar-core',
     mirrorWidgetId: 'calendar',
     label: 'Calendar',
     kind: 'calendar',
+    category: 'lifestyle',
     x: 10,
     y: 75,
-    width: 35,
-    height: 15,
+    width: 32,
+    height: 20,
   },
   {
     id: 'sticky-note',
     mirrorWidgetId: 'sticky_note',
     label: 'Sticky note',
     kind: 'text',
+    category: 'desk',
     title: 'Note',
     text: 'Short reminder or idea — open settings (gear) to edit.',
     x: 28,
     y: 36,
-    width: 38,
-    height: 22,
+    width: 32,
+    height: 20,
   },
   {
     id: 'daily-quote',
     mirrorWidgetId: 'daily_quote',
     label: 'Daily quote',
     kind: 'text',
+    category: 'lifestyle',
     title: 'Quote',
     text: '“Add a line that motivates you today.”',
     x: 8,
     y: 42,
-    width: 84,
-    height: 18,
+    width: 44,
+    height: 28,
   },
   {
     id: 'today-list',
     mirrorWidgetId: 'today_list',
     label: 'Today’s list',
     kind: 'text',
+    category: 'lifestyle',
     title: 'Today',
     text: '• First task\n• Second task\n• Third task',
     x: 10,
     y: 58,
-    width: 42,
+    width: 44,
     height: 28,
   },
   {
@@ -94,23 +103,25 @@ export const CUSTOM_WIDGET_TEMPLATES: CustomWidgetTemplate[] = [
     mirrorWidgetId: 'household',
     label: 'Household',
     kind: 'text',
+    category: 'home',
     title: 'Household',
     text: 'Trash night • Groceries • Bills',
     x: 52,
     y: 58,
-    width: 40,
-    height: 24,
+    width: 44,
+    height: 28,
   },
   {
     id: 'minimal',
     mirrorWidgetId: 'minimal_text',
     label: 'Minimal text',
     kind: 'text',
+    category: 'tech',
     title: 'Message',
     text: 'One line on the mirror.',
     x: 30,
     y: 44,
-    width: 44,
+    width: 22,
     height: 14,
   },
   {
@@ -118,10 +129,11 @@ export const CUSTOM_WIDGET_TEMPLATES: CustomWidgetTemplate[] = [
     mirrorWidgetId: 'reminders',
     label: 'Reminders',
     kind: 'reminders',
+    category: 'tech',
     x: 52,
     y: 72,
-    width: 38,
-    height: 22,
+    width: 32,
+    height: 20,
   },
 ];
 
