@@ -35,7 +35,7 @@ import { mirrorGetWidgets, mirrorPutWidgets } from './lib/mirrorApi';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
-import { createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
+import { createSessionId, createWidgetsSyncEnvelope, createDevicePairEnvelope, getDeviceId } from './shared/ws/contracts';
 import { triggerMirrorCapture } from './features/camera/cameraApi';
 import {
   listWardrobeItems,
@@ -72,11 +72,12 @@ const GlassCard = ({ children, className, onClick }: { children: React.ReactNode
   <div 
     onClick={onClick}
     className={cn(
-      "bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-4 transition-colors duration-300 hover:bg-white/10",
+      "relative bg-[var(--glass-bg)] backdrop-blur-xl border border-[var(--glass-border)] rounded-2xl p-4 transition-all duration-300 hover:bg-[var(--glass-hover)] hover:shadow-[var(--glow-widget-hover)] shadow-[var(--glow-widget)] overflow-hidden",
       className
     )}
   >
-    {children}
+    <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.06] via-transparent to-transparent pointer-events-none" />
+    <div className="relative z-10">{children}</div>
   </div>
 );
 
@@ -215,8 +216,9 @@ const MirrorWidget = ({
     >
       <div
         style={{ padding: `${cardPaddingPx}px` }}
-        className="w-full h-full bg-white/10 backdrop-blur-md border border-white/20 rounded-xl flex flex-col items-center justify-center gap-2 shadow-2xl group-hover:bg-white/20 transition-colors relative overflow-hidden"
+        className="w-full h-full bg-white/[0.07] backdrop-blur-xl border border-white/[0.12] rounded-xl flex flex-col items-center justify-center gap-2 shadow-[0_8px_32px_rgba(0,0,0,0.4)] group-hover:bg-white/[0.12] group-hover:shadow-[0_12px_40px_rgba(0,0,0,0.5),0_0_20px_rgba(94,225,217,0.04)] transition-all duration-300 relative overflow-hidden"
       >
+        <div className="absolute inset-0 bg-gradient-to-br from-white/[0.05] via-transparent to-transparent pointer-events-none rounded-xl" />
         <button
           type="button"
           onPointerDown={(e) => e.stopPropagation()}
@@ -408,9 +410,12 @@ export default function App() {
   }, [widgets]);
 
   // --- WebSocket contract v2 ---
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     const connectWs = () => {
       if (socketRef.current) socketRef.current.close();
+      reconnectTimerRef.current = null;
 
       try {
         const socket = new WebSocket(wsUrl);
@@ -418,7 +423,14 @@ export default function App() {
 
         socket.onopen = () => {
           setWsConnected(true);
-          toast.success('Connected to mirror control channel');
+
+          const pairEnvelope = createDevicePairEnvelope(
+            sessionIdRef.current,
+            getDeviceId(),
+            'Companion App',
+          );
+          socket.send(JSON.stringify(pairEnvelope));
+
           if (!mirrorHttpRef.current.trim()) {
             const initialEnvelope = createWidgetsSyncEnvelope(
               sessionIdRef.current,
@@ -431,7 +443,7 @@ export default function App() {
         socket.onclose = () => {
           setWsConnected(false);
           if (socketRef.current === socket) {
-            setTimeout(connectWs, 5000);
+            reconnectTimerRef.current = setTimeout(connectWs, 5000);
           }
         };
 
@@ -440,24 +452,36 @@ export default function App() {
         };
 
         socket.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.type === 'CAMERA_COUNTDOWN_TICK') {
-            const remaining = Number(data?.payload?.remaining);
-            if (Number.isFinite(remaining)) setCountdown(remaining);
-            return;
-          }
-          if (data.type === 'CAMERA_CAPTURED') {
-            setCountdown(null);
-            toast.success('Photo captured');
-            return;
-          }
-          if (data.type === 'CAMERA_ERROR') {
-            setCountdown(null);
-            toast.error(String(data?.payload?.message ?? 'Camera error'));
-            return;
-          }
-          if (data.type === 'WIDGETS_SYNC_APPLIED') {
-            toast.success('Mirror applied layout update');
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'DEVICE_CONNECTED') {
+              toast.success('Paired with mirror');
+              return;
+            }
+            if (data.type === 'DEVICE_ERROR') {
+              toast.error(String(data?.payload?.message ?? 'Pairing failed'));
+              return;
+            }
+            if (data.type === 'CAMERA_COUNTDOWN_TICK') {
+              const remaining = Number(data?.payload?.remaining);
+              if (Number.isFinite(remaining)) setCountdown(remaining);
+              return;
+            }
+            if (data.type === 'CAMERA_CAPTURED') {
+              setCountdown(null);
+              toast.success('Photo captured');
+              return;
+            }
+            if (data.type === 'CAMERA_ERROR') {
+              setCountdown(null);
+              toast.error(String(data?.payload?.message ?? 'Camera error'));
+              return;
+            }
+            if (data.type === 'WIDGETS_SYNC_APPLIED') {
+              toast.success('Mirror applied layout update');
+            }
+          } catch {
+            // ignore malformed messages
           }
         };
       } catch {
@@ -467,6 +491,10 @@ export default function App() {
 
     connectWs();
     return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       const socket = socketRef.current;
       socketRef.current = null;
       socket?.close();
@@ -679,36 +707,41 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white p-6 font-sans selection:bg-white/20">
+    <div className="min-h-screen bg-black text-white p-6 font-[var(--font-sans)] selection:bg-white/20 relative overflow-hidden">
+      <div className="fixed inset-0 pointer-events-none z-0">
+        <div className="absolute top-0 left-0 w-[60%] h-[50%] bg-[radial-gradient(ellipse_at_20%_20%,rgba(94,225,217,0.06)_0%,transparent_70%)]" />
+        <div className="absolute bottom-0 right-0 w-[50%] h-[40%] bg-[radial-gradient(ellipse_at_80%_80%,rgba(96,165,250,0.04)_0%,transparent_60%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
+      </div>
+      <div className="relative z-10">
       <Toaster theme="dark" position="top-center" />
       
-      {/* Header */}
       <header className="max-w-7xl mx-auto flex items-center justify-between mb-8 lg:mb-12">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center">
-            <Shirt size={20} />
+          <div className="w-10 h-10 rounded-full bg-white/[0.06] backdrop-blur-sm border border-white/[0.08] flex items-center justify-center shadow-[0_4px_16px_rgba(0,0,0,0.3)]">
+            <Shirt size={20} className="text-white/70" />
           </div>
           <div>
-            <h1 className="text-xl font-medium tracking-tight">Mirror Config</h1>
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-white/40">
+            <h1 className="text-xl font-medium tracking-tight font-[var(--font-display)]">Mirror Config</h1>
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.15em] text-white/35 font-medium">
               {wsConnected ? (
-                <><Wifi size={10} className="text-green-500" /> Connected</>
+                <><Wifi size={10} className="text-emerald-400" /> Connected</>
               ) : (
-                <><WifiOff size={10} className="text-red-500" /> Disconnected</>
+                <><WifiOff size={10} className="text-red-400" /> Disconnected</>
               )}
             </div>
           </div>
         </div>
         <button 
           onClick={() => setShowSettings(true)}
-          className="p-2 text-white/40 hover:text-white transition-colors"
+          className="p-2.5 text-white/30 hover:text-white/80 transition-colors rounded-xl hover:bg-white/[0.04]"
         >
           <Settings size={20} />
         </button>
       </header>
 
       <nav className="max-w-7xl mx-auto mb-6">
-        <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1 gap-1">
+        <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.04] backdrop-blur-sm p-1 gap-0.5 shadow-[0_4px_16px_rgba(0,0,0,0.2)]">
           {[
             { id: 'layout', label: 'Layout' },
             { id: 'camera', label: 'Camera' },
@@ -720,8 +753,10 @@ export default function App() {
               type="button"
               onClick={() => setActiveTab(tab.id as typeof activeTab)}
               className={cn(
-                'px-4 py-2 rounded-full text-xs tracking-wide transition-colors',
-                activeTab === tab.id ? 'bg-white text-black' : 'text-white/60 hover:text-white'
+                'px-4 py-2 rounded-full text-xs tracking-wide transition-all duration-200',
+                activeTab === tab.id
+                  ? 'bg-white text-black font-medium shadow-[0_2px_8px_rgba(255,255,255,0.15)]'
+                  : 'text-white/50 hover:text-white/80 hover:bg-white/[0.04]'
               )}
             >
               {tab.label}
@@ -742,14 +777,17 @@ export default function App() {
               className="absolute inset-0 bg-black/80 backdrop-blur-sm"
             />
             <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="relative w-full max-w-sm bg-zinc-900 border border-white/10 rounded-3xl p-8 shadow-2xl"
+              initial={{ scale: 0.94, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden"
             >
+              <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
+              <div className="relative z-10">
               <div className="flex items-center justify-between mb-8">
-                <h3 className="text-xl font-medium">Mirror Settings</h3>
-                <button onClick={() => setShowSettings(false)} className="text-white/40 hover:text-white">
+                <h3 className="text-xl font-medium font-[var(--font-display)]">Mirror Settings</h3>
+                <button onClick={() => setShowSettings(false)} className="text-white/30 hover:text-white/80 transition-colors">
                   <X size={20} />
                 </button>
               </div>
@@ -800,10 +838,11 @@ export default function App() {
                     if (nextWs) setWsUrl(nextWs);
                     setShowSettings(false);
                   }}
-                  className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all"
+                  className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all active:scale-[0.98]"
                 >
                   Save Configuration
                 </button>
+              </div>
               </div>
             </motion.div>
           </div>
@@ -822,17 +861,20 @@ export default function App() {
               className="absolute inset-0 bg-black/80 backdrop-blur-sm"
             />
             <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="relative w-full max-w-sm bg-zinc-900 border border-white/10 rounded-3xl p-8 shadow-2xl"
+              initial={{ scale: 0.94, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden"
             >
+              <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
+              <div className="relative z-10">
               <div className="flex items-center justify-between mb-8">
                 <div className="flex items-center gap-3">
-                  <div className="text-white/60">{activeWidgetConfig.icon}</div>
-                  <h3 className="text-xl font-medium">{activeWidgetConfig.name} Settings</h3>
+                  <div className="text-white/50">{activeWidgetConfig.icon}</div>
+                  <h3 className="text-xl font-medium font-[var(--font-display)]">{activeWidgetConfig.name} Settings</h3>
                 </div>
-                <button onClick={() => setActiveWidgetConfig(null)} className="text-white/40 hover:text-white">
+                <button onClick={() => setActiveWidgetConfig(null)} className="text-white/30 hover:text-white/80 transition-colors">
                   <X size={20} />
                 </button>
               </div>
@@ -960,10 +1002,11 @@ export default function App() {
                 
                 <button 
                   onClick={() => setActiveWidgetConfig(null)}
-                  className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all"
+                  className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all active:scale-[0.98]"
                 >
                   Done
                 </button>
+              </div>
               </div>
             </motion.div>
           </div>
@@ -1003,11 +1046,10 @@ export default function App() {
             
             <div 
               ref={mirrorRef}
-              className="relative w-full aspect-[9/16] bg-zinc-950 border border-white/10 rounded-[2.5rem] overflow-hidden shadow-inner group mx-auto max-w-[400px] lg:max-w-none"
+              className="relative w-full aspect-[9/16] bg-black border border-white/[0.08] rounded-[2.5rem] overflow-hidden group mx-auto max-w-[400px] lg:max-w-none shadow-[0_20px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.04)]"
             >
-              {/* Mirror Surface Reflection Effect */}
-              <div className="absolute inset-0 bg-gradient-to-br from-white/5 via-transparent to-transparent pointer-events-none" />
-              <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] pointer-events-none" />
+              <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none" />
+              <div className="absolute top-0 left-[15%] w-[40%] h-[30%] bg-[radial-gradient(ellipse,rgba(94,225,217,0.04)_0%,transparent_70%)] pointer-events-none" />
               
               {widgets.map((widget) => (
                 <MirrorWidget 
@@ -1169,19 +1211,20 @@ export default function App() {
       </main>
 
       {/* Bottom Nav / Status */}
-      <div className="fixed bottom-0 inset-x-0 p-6 bg-gradient-to-t from-black via-black to-transparent z-40">
+      <div className="fixed bottom-0 inset-x-0 p-6 bg-gradient-to-t from-black via-black/80 to-transparent z-40">
         <div className="max-w-7xl mx-auto flex items-center justify-center lg:justify-end">
-          <div className="px-4 py-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-full flex items-center gap-4">
+          <div className="px-5 py-2.5 bg-white/[0.04] backdrop-blur-2xl border border-white/[0.06] rounded-full flex items-center gap-4 shadow-[0_8px_24px_rgba(0,0,0,0.3)]">
              <div className="flex items-center gap-2">
-               <div className={cn("w-1.5 h-1.5 rounded-full", wsConnected ? "bg-green-500 animate-pulse" : "bg-red-500")} />
-               <span className="text-[10px] uppercase tracking-widest font-bold text-white/60">Mirror Sync</span>
+               <div className={cn("w-1.5 h-1.5 rounded-full", wsConnected ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" : "bg-red-400")} />
+               <span className="text-[10px] uppercase tracking-[0.15em] font-semibold text-white/50">Mirror Sync</span>
              </div>
-             <div className="w-px h-3 bg-white/10" />
-             <span className="text-[10px] uppercase tracking-widest font-bold text-white/30">
+             <div className="w-px h-3 bg-white/[0.06]" />
+             <span className="text-[10px] uppercase tracking-[0.15em] font-semibold text-white/25">
                Mobile Companion
              </span>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

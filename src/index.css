@@ -1,6 +1,37 @@
 @import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap");
 
-/* Native `<select>` / `<option>`: readable menu on dark pages */
+@layer base {
+  :root {
+    --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", monospace;
+
+    --color-accent: #5ee1d9;
+    --color-accent-glow: rgba(94, 225, 217, 0.35);
+    --color-warm: #f5a623;
+    --color-cool: #60a5fa;
+
+    --glass-bg: rgba(255, 255, 255, 0.06);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-hover: rgba(255, 255, 255, 0.1);
+    --glass-blur: 20px;
+
+    --glow-widget: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --glow-widget-hover: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 30px rgba(94, 225, 217, 0.06), 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+    --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+    --radius: 18px;
+    --radius-lg: 24px;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
 .companion-select,
 .companion-select option {
   color: #000;
