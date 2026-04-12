@@ -35,7 +35,9 @@ import { mirrorGetWidgets, mirrorPutWidgets } from './lib/mirrorApi';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
-import { createSessionId, createWidgetsSyncEnvelope, createDevicePairEnvelope, getDeviceId } from './shared/ws/contracts';
+import { createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
+import { MirrorConnectionManager } from './lib/connectionManager';
+import { getMirrorWsUrl } from './lib/connectionConfig';
 import { FluidDropdown } from './components/ui/fluid-dropdown';
 import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } from './lib/widgetSizePresets';
 import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
@@ -345,17 +347,15 @@ export default function App() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const fallback = `${proto}//${window.location.hostname}:8002/ws/control`;
     try {
-      return localStorage.getItem(MIRROR_WS_STORAGE_KEY) ?? fallback;
+      return getMirrorWsUrl();
     } catch {
-      return fallback;
+      return 'ws://localhost:8002/ws/control';
     }
   });
   const [showSettings, setShowSettings] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
-  const socketRef = useRef<WebSocket | null>(null);
+  const connectionManagerRef = useRef<MirrorConnectionManager | null>(null);
   const [mirrorHttpBase, setMirrorHttpBase] = useState(() => {
     if (typeof window === 'undefined') return mirrorHttpFallbackFromWindow();
     try {
@@ -484,109 +484,45 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [widgets]);
 
-  // --- WebSocket contract v2 ---
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // --- WebSocket via MirrorConnectionManager ---
+  const messageHandlerRef = useRef<(data: Record<string, unknown>) => void>(() => {});
+  messageHandlerRef.current = (data: Record<string, unknown>) => {
+    const type = data.type as string | undefined;
+    if (type === 'DEVICE_CONNECTED') { toast.success('Paired with mirror'); return; }
+    if (type === 'DEVICE_ERROR') { toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Pairing failed')); return; }
+    if (type === 'CAMERA_COUNTDOWN_TICK') {
+      const remaining = Number((data.payload as Record<string, unknown>)?.remaining);
+      if (Number.isFinite(remaining)) setCountdown(remaining);
+      return;
+    }
+    if (type === 'CAMERA_CAPTURED') { setCountdown(null); toast.success('Photo captured'); return; }
+    if (type === 'CAMERA_ERROR') { setCountdown(null); toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error')); return; }
+    if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
+  };
 
   useEffect(() => {
-    const connectWs = () => {
-      if (socketRef.current) socketRef.current.close();
-      reconnectTimerRef.current = null;
-
-      try {
-        const socket = new WebSocket(wsUrl);
-        socketRef.current = socket;
-
-        socket.onopen = () => {
-          setWsConnected(true);
-
-          const pairEnvelope = createDevicePairEnvelope(
-            sessionIdRef.current,
-            getDeviceId(),
-            'Companion App',
-          );
-          socket.send(JSON.stringify(pairEnvelope));
-
-          if (!mirrorHttpRef.current.trim()) {
-            const initialEnvelope = createWidgetsSyncEnvelope(
-              sessionIdRef.current,
-              widgetsRef.current
-            );
-            socket.send(JSON.stringify(initialEnvelope));
-          }
-        };
-
-        socket.onclose = () => {
-          setWsConnected(false);
-          if (socketRef.current === socket) {
-            reconnectTimerRef.current = setTimeout(connectWs, 5000);
-          }
-        };
-
-        socket.onerror = () => {
-          setWsConnected(false);
-        };
-
-        socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'DEVICE_CONNECTED') {
-              toast.success('Paired with mirror');
-              return;
-            }
-            if (data.type === 'DEVICE_ERROR') {
-              toast.error(String(data?.payload?.message ?? 'Pairing failed'));
-              return;
-            }
-            if (data.type === 'CAMERA_COUNTDOWN_TICK') {
-              const remaining = Number(data?.payload?.remaining);
-              if (Number.isFinite(remaining)) setCountdown(remaining);
-              return;
-            }
-            if (data.type === 'CAMERA_CAPTURED') {
-              setCountdown(null);
-              toast.success('Photo captured');
-              return;
-            }
-            if (data.type === 'CAMERA_ERROR') {
-              setCountdown(null);
-              toast.error(String(data?.payload?.message ?? 'Camera error'));
-              return;
-            }
-            if (data.type === 'WIDGETS_SYNC_APPLIED') {
-              toast.success('Mirror applied layout update');
-            }
-          } catch {
-            // ignore malformed messages
-          }
-        };
-      } catch {
-        setWsConnected(false);
-      }
-    };
-
-    connectWs();
-    return () => {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      const socket = socketRef.current;
-      socketRef.current = null;
-      socket?.close();
-    };
+    const mgr = new MirrorConnectionManager(
+      {
+        onStatusChange: (s) => setWsConnected(s === 'CONNECTED'),
+        onMessage: (d) => messageHandlerRef.current(d),
+      },
+      wsUrl,
+    );
+    connectionManagerRef.current = mgr;
+    mgr.connect();
+    return () => { mgr.dispose(); connectionManagerRef.current = null; };
   }, [wsUrl]);
 
   const sendEnvelopeToMirror = (envelope: Record<string, unknown>) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(envelope));
-    } else {
+    if (!connectionManagerRef.current?.send(envelope)) {
       toast.error('Mirror not connected');
     }
   };
 
   const syncStateToMirror = useCallback((currentWidgets?: Widget[]) => {
     const widgetsToSync = currentWidgets ?? widgetsRef.current;
-    sendEnvelopeToMirror(createWidgetsSyncEnvelope(sessionIdRef.current, widgetsToSync));
+    const mgr = connectionManagerRef.current;
+    sendEnvelopeToMirror(createWidgetsSyncEnvelope(mgr?.getSessionId() ?? sessionIdRef.current, widgetsToSync));
   }, []);
 
   // --- Wardrobe API sync ---
