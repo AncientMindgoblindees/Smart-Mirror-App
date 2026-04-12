@@ -45,7 +45,7 @@ import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/custo
 import type { WidgetConfigOut } from './types/mirror';
 import { createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
-import { getMirrorWsUrl } from './lib/connectionConfig';
+import { getMirrorHttpBase, getMirrorWsUrl } from './lib/connectionConfig';
 import { FluidDropdown } from './components/ui/fluid-dropdown';
 import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } from './lib/widgetSizePresets';
 import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
@@ -367,9 +367,11 @@ export default function App() {
   const [mirrorHttpBase, setMirrorHttpBase] = useState(() => {
     if (typeof window === 'undefined') return mirrorHttpFallbackFromWindow();
     try {
-      return localStorage.getItem(MIRROR_HTTP_STORAGE_KEY) ?? mirrorHttpFallbackFromWindow();
+      // Prefer saved URL; else use env-aware default (production → https://mirror.smart-mirror.tech).
+      // Do not use same-host :8002 when the app is served from Pages at smart-mirror.tech.
+      return localStorage.getItem(MIRROR_HTTP_STORAGE_KEY) ?? getMirrorHttpBase();
     } catch {
-      return mirrorHttpFallbackFromWindow();
+      return getMirrorHttpBase();
     }
   });
   const backendByWidgetIdRef = useRef<Map<string, WidgetConfigOut>>(new Map());
