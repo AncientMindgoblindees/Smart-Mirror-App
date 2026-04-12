@@ -31,7 +31,15 @@ import {
   dedupeWidgetApiRows,
 } from './lib/mirrorLayout';
 import { loadLayoutCache, saveLayoutCache } from './lib/layoutLocalCache';
-import { mirrorGetWidgets, mirrorPutWidgets } from './lib/mirrorApi';
+import {
+  mirrorGetWidgets,
+  mirrorPutWidgets,
+  mirrorAuthProviders,
+  mirrorAuthStartDeviceLogin,
+  mirrorAuthLogout,
+  mirrorOAuthWebStartUrl,
+  type MirrorAuthProviderStatus,
+} from './lib/mirrorApi';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
@@ -329,9 +337,9 @@ const MirrorWidget = ({
 export default function App() {
   const userId = 'local-dev';
   const sessionIdRef = useRef(createSessionId());
-  const [activeTab, setActiveTab] = useState<'layout' | 'camera' | 'wardrobe' | 'connection'>(
-    'layout'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'layout' | 'camera' | 'wardrobe' | 'connection' | 'accounts'
+  >('layout');
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
     return loadLayoutCache() ?? hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
@@ -372,6 +380,7 @@ export default function App() {
   mirrorHttpRef.current = mirrorHttpBase;
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
+  const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
 
   const filteredTemplates = useMemo(() => {
     if (activeTemplateCategory === 'all') return CUSTOM_WIDGET_TEMPLATES;
@@ -452,6 +461,24 @@ export default function App() {
   useEffect(() => {
     void loadLayoutFromMirror({ silent: true });
   }, [loadLayoutFromMirror]);
+
+  const loadMirrorAuth = useCallback(async () => {
+    const base = mirrorHttpRef.current.trim();
+    if (!base) return;
+    try {
+      const list = await mirrorAuthProviders(base);
+      setMirrorAuthList(list);
+    } catch {
+      setMirrorAuthList([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'accounts') return;
+    void loadMirrorAuth();
+    const id = window.setInterval(() => void loadMirrorAuth(), 8000);
+    return () => clearInterval(id);
+  }, [activeTab, loadMirrorAuth]);
 
   const schedulePushLayoutToMirror = useCallback(
     (list: Widget[]) => {
@@ -795,6 +822,7 @@ export default function App() {
             { id: 'layout', label: 'Layout' },
             { id: 'camera', label: 'Camera' },
             { id: 'wardrobe', label: 'Wardrobe' },
+            { id: 'accounts', label: 'Accounts' },
             { id: 'connection', label: 'Connection' },
           ].map((tab) => (
             <button
@@ -1071,6 +1099,118 @@ export default function App() {
       </AnimatePresence>
 
       <main className="max-w-7xl mx-auto pb-32">
+        {activeTab === 'accounts' ? (
+          <section className="max-w-xl mx-auto px-4 space-y-8">
+            <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">
+              Calendar accounts
+            </h2>
+            <p className="text-sm text-white/45">
+              Use the same HTTP base as in Settings. The mirror stores tokens; widgets read calendar and tasks from the mirror API.
+            </p>
+
+            <GlassCard className="space-y-4">
+              <h3 className="text-sm font-medium text-white/90">Sign in on the mirror (QR)</h3>
+              <p className="text-xs text-white/40">
+                Starts device login. Your mirror will show a QR code and code — complete sign-in on your phone.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
+                  onClick={async () => {
+                    try {
+                      await mirrorAuthStartDeviceLogin(mirrorHttpBase, 'google');
+                      toast.success('Check the mirror for a QR code.');
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : 'Failed to start Google login');
+                    }
+                  }}
+                >
+                  Google (QR on mirror)
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
+                  onClick={async () => {
+                    try {
+                      await mirrorAuthStartDeviceLogin(mirrorHttpBase, 'microsoft');
+                      toast.success('Check the mirror for a QR code.');
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : 'Failed to start Microsoft login');
+                    }
+                  }}
+                >
+                  Microsoft (QR on mirror)
+                </button>
+              </div>
+            </GlassCard>
+
+            <GlassCard className="space-y-4">
+              <h3 className="text-sm font-medium text-white/90">Sign in on this device</h3>
+              <p className="text-xs text-white/40">
+                Opens your browser to Google or Microsoft, then returns to the mirror. Use when you prefer not to use the mirror screen.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
+                  onClick={() => {
+                    window.location.href = mirrorOAuthWebStartUrl(mirrorHttpBase, 'google');
+                  }}
+                >
+                  Google in browser
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
+                  onClick={() => {
+                    window.location.href = mirrorOAuthWebStartUrl(mirrorHttpBase, 'microsoft');
+                  }}
+                >
+                  Microsoft in browser
+                </button>
+              </div>
+            </GlassCard>
+
+            <GlassCard className="space-y-3">
+              <h3 className="text-sm font-medium text-white/90">Status</h3>
+              {mirrorAuthList.length === 0 ? (
+                <p className="text-xs text-white/35">Could not load status. Check mirror HTTP base in Settings.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {mirrorAuthList.map((row) => (
+                    <li
+                      key={row.provider}
+                      className="flex items-center justify-between gap-3 text-sm border border-white/10 rounded-xl px-3 py-2"
+                    >
+                      <span className="capitalize">{row.provider}</span>
+                      <span className={row.connected ? 'text-emerald-400' : 'text-white/40'}>
+                        {row.connected ? 'Connected' : 'Not connected'}
+                      </span>
+                      {row.connected && (
+                        <button
+                          type="button"
+                          className="text-xs text-red-300 hover:text-red-200"
+                          onClick={async () => {
+                            try {
+                              await mirrorAuthLogout(mirrorHttpBase, row.provider);
+                              toast.success('Disconnected');
+                              void loadMirrorAuth();
+                            } catch (e) {
+                              toast.error(e instanceof Error ? e.message : 'Disconnect failed');
+                            }
+                          }}
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </GlassCard>
+          </section>
+        ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
           
           {/* Left Column: Mirror Canvas */}
@@ -1269,6 +1409,7 @@ export default function App() {
             )}
           </div>
         </div>
+        )}
       </main>
 
       {/* Bottom Nav / Status */}
