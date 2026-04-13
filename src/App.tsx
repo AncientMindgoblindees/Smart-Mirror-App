@@ -43,7 +43,7 @@ import {
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
-import { createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
+import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
 import { getMirrorHttpBase, getMirrorWsUrl } from './lib/connectionConfig';
 import { FluidDropdown } from './components/ui/fluid-dropdown';
@@ -375,7 +375,7 @@ export default function App() {
     }
   });
   const backendByWidgetIdRef = useRef<Map<string, WidgetConfigOut>>(new Map());
-  const pushDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pushDebounceRef = useRef<number | undefined>(undefined);
   const widgetsRef = useRef(widgets);
   widgetsRef.current = widgets;
   const mirrorHttpRef = useRef(mirrorHttpBase);
@@ -383,6 +383,8 @@ export default function App() {
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
   const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
+  const remoteRefreshInFlightRef = useRef(false);
+  const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
 
   const filteredTemplates = useMemo(() => {
     if (activeTemplateCategory === 'all') return CUSTOM_WIDGET_TEMPLATES;
@@ -464,6 +466,14 @@ export default function App() {
     void loadLayoutFromMirror({ silent: true });
   }, [loadLayoutFromMirror]);
 
+  useEffect(() => {
+    return () => {
+      if (remoteRefreshTimerRef.current) {
+        clearTimeout(remoteRefreshTimerRef.current);
+      }
+    };
+  }, []);
+
   const loadMirrorAuth = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
     if (!base) return;
@@ -487,7 +497,7 @@ export default function App() {
       const base = mirrorHttpRef.current.trim();
       if (!base) return;
       if (pushDebounceRef.current) clearTimeout(pushDebounceRef.current);
-      pushDebounceRef.current = setTimeout(async () => {
+      pushDebounceRef.current = window.setTimeout(async () => {
         setHttpSyncState('pushing');
         try {
           const payload = buildWidgetPutPayload(list, backendByWidgetIdRef.current);
@@ -527,6 +537,18 @@ export default function App() {
     if (type === 'CAMERA_CAPTURED') { setCountdown(null); toast.success('Photo captured'); return; }
     if (type === 'CAMERA_ERROR') { setCountdown(null); toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error')); return; }
     if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
+    if (type === WIDGETS_REMOTE_UPDATED_EVENT) {
+      if (remoteRefreshTimerRef.current) {
+        clearTimeout(remoteRefreshTimerRef.current);
+      }
+      remoteRefreshTimerRef.current = window.setTimeout(() => {
+        if (remoteRefreshInFlightRef.current) return;
+        remoteRefreshInFlightRef.current = true;
+        void loadLayoutFromMirror({ silent: true }).finally(() => {
+          remoteRefreshInFlightRef.current = false;
+        });
+      }, 250);
+    }
   };
 
   useEffect(() => {

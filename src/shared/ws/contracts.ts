@@ -8,6 +8,8 @@ export type ControlEnvelope = {
   payload: Record<string, unknown>;
 };
 
+export const WIDGETS_REMOTE_UPDATED_EVENT = 'WIDGETS_REMOTE_UPDATED';
+
 export function createSessionId(): string {
   return `session-${Math.random().toString(36).slice(2, 10)}`;
 }
