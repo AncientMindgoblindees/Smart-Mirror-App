@@ -12,6 +12,7 @@ import {
   Check,
   Loader2,
   Settings,
+  Sparkles,
   Wifi,
   WifiOff,
   Trash2
@@ -51,11 +52,17 @@ import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } fro
 import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
 import { triggerMirrorCapture } from './features/camera/cameraApi';
 import {
-  listWardrobeItems,
-  removeWardrobeItem,
-  uploadWardrobeItem,
-  type WardrobeItem,
-} from './features/wardrobe/wardrobeApi';
+  CLOTHING_CATEGORIES,
+  createClothingWithImage,
+  deleteClothingItem,
+  generateOutfitTryOn,
+  listClothingItems,
+  outfitSlotForCategory,
+  personImageLatestUrl,
+  primaryImageUrl,
+  type ClothingItem,
+  type ClothingItemCreate,
+} from './features/wardrobe/clothingApi';
 
 const MIRROR_HTTP_STORAGE_KEY = 'mirror_http_base';
 const MIRROR_WS_STORAGE_KEY = 'mirror_ws_url';
@@ -335,10 +342,9 @@ const MirrorWidget = ({
 };
 
 export default function App() {
-  const userId = 'local-dev';
   const sessionIdRef = useRef(createSessionId());
   const [activeTab, setActiveTab] = useState<
-    'layout' | 'camera' | 'wardrobe' | 'connection' | 'accounts'
+    'layout' | 'camera' | 'wardrobe' | 'outfit' | 'connection' | 'accounts'
   >('layout');
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
@@ -350,8 +356,23 @@ export default function App() {
   const mirrorRef = useRef<HTMLDivElement>(null);
   /** Local draft while the settings modal is open; committed to `widgets` + mirror only on Done. */
   const [widgetSettingsDraft, setWidgetSettingsDraft] = useState<Widget | null>(null);
-  const [wardrobe, setWardrobe] = useState<WardrobeItem[]>([]);
+  const [wardrobe, setWardrobe] = useState<ClothingItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+  const [uploadMeta, setUploadMeta] = useState<ClothingItemCreate>({
+    name: '',
+    category: 'shirt',
+    color: '',
+    season: '',
+    notes: '',
+  });
+  const [outfitItems, setOutfitItems] = useState<ClothingItem[]>([]);
+  const [selectedShirt, setSelectedShirt] = useState<ClothingItem | null>(null);
+  const [selectedPants, setSelectedPants] = useState<ClothingItem | null>(null);
+  const [selectedAccessory, setSelectedAccessory] = useState<ClothingItem | null>(null);
+  const [personImageNonce, setPersonImageNonce] = useState(0);
+  const [isGeneratingOutfit, setIsGeneratingOutfit] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
@@ -576,47 +597,92 @@ export default function App() {
     sendEnvelopeToMirror(createWidgetsSyncEnvelope(mgr?.getSessionId() ?? sessionIdRef.current, widgetsToSync));
   }, []);
 
-  // --- Wardrobe API sync ---
+  // --- Clothing API sync (wardrobe + outfit tabs) ---
   useEffect(() => {
-    const base = mirrorHttpBase.trim();
-    if (!base) {
-      setWardrobe([]);
-      return;
-    }
     let cancelled = false;
     void (async () => {
+      const base = mirrorHttpBase.trim();
+      if (!base) {
+        if (!cancelled) {
+          setWardrobe([]);
+          setOutfitItems([]);
+        }
+        return;
+      }
       try {
-        const items = await listWardrobeItems(base, userId);
-        if (!cancelled) setWardrobe(items);
+        const items = await listClothingItems(base, true);
+        if (!cancelled) {
+          setWardrobe(items);
+          setOutfitItems(items.filter((it) => primaryImageUrl(it)));
+        }
       } catch {
-        if (!cancelled) setWardrobe([]);
+        if (!cancelled) {
+          setWardrobe([]);
+          setOutfitItems([]);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [mirrorHttpBase, userId]);
+  }, [mirrorHttpBase]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const openUploadModal = (file: File) => {
+    const baseName = file.name.replace(/\.[^/.]+$/, '');
+    setPendingUploadFile(file);
+    setUploadMeta({
+      name: baseName,
+      category: 'shirt',
+      color: '',
+      season: '',
+      notes: '',
+    });
+    setUploadModalOpen(true);
+  };
+
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
     const base = mirrorHttpBase.trim();
     if (!base) {
       toast.error('Set Mirror HTTP base before uploading');
       return;
     }
+    openUploadModal(file);
+  };
+
+  const commitUpload = async () => {
+    const base = mirrorHttpBase.trim();
+    const file = pendingUploadFile;
+    if (!base || !file) return;
+    const name = uploadMeta.name.trim();
+    const category = uploadMeta.category.trim();
+    if (!name || !category) {
+      toast.error('Name and category are required');
+      return;
+    }
 
     setIsUploading(true);
     try {
-      const item = await uploadWardrobeItem(base, userId, file);
+      const item = await createClothingWithImage(base, file, {
+        name,
+        category,
+        color: uploadMeta.color?.trim() || null,
+        season: uploadMeta.season?.trim() || null,
+        notes: uploadMeta.notes?.trim() || null,
+      });
       setWardrobe((prev) => [item, ...prev]);
+      setOutfitItems((prev) => (primaryImageUrl(item) ? [item, ...prev] : prev));
       toast.success('Item added to wardrobe');
+      setUploadModalOpen(false);
+      setPendingUploadFile(null);
       sendEnvelopeToMirror({
         type: 'WARDROBE_UPDATED',
         version: 2,
         sessionId: sessionIdRef.current,
         timestamp: new Date().toISOString(),
-        payload: { user_id: userId },
+        payload: {},
       });
     } catch {
       toast.error('Upload failed');
@@ -629,18 +695,64 @@ export default function App() {
     try {
       const base = mirrorHttpBase.trim();
       if (!base) return;
-      await removeWardrobeItem(base, id);
+      await deleteClothingItem(base, id);
       setWardrobe((prev) => prev.filter((item) => item.id !== id));
+      setOutfitItems((prev) => prev.filter((item) => item.id !== id));
+      setSelectedShirt((s) => (s?.id === id ? null : s));
+      setSelectedPants((s) => (s?.id === id ? null : s));
+      setSelectedAccessory((s) => (s?.id === id ? null : s));
       toast.success('Item removed');
       sendEnvelopeToMirror({
         type: 'WARDROBE_UPDATED',
         version: 2,
         sessionId: sessionIdRef.current,
         timestamp: new Date().toISOString(),
-        payload: { user_id: userId },
+        payload: {},
       });
     } catch {
       toast.error('Delete failed');
+    }
+  };
+
+  const itemsForSlot = (slot: 'shirt' | 'pants' | 'accessories') =>
+    outfitItems.filter((it) => outfitSlotForCategory(it.category) === slot);
+
+  const randomizeOutfit = () => {
+    const pick = (slot: 'shirt' | 'pants' | 'accessories') => {
+      const pool = itemsForSlot(slot);
+      if (!pool.length) return null;
+      return pool[Math.floor(Math.random() * pool.length)] ?? null;
+    };
+    setSelectedShirt(pick('shirt'));
+    setSelectedPants(pick('pants'));
+    setSelectedAccessory(pick('accessories'));
+  };
+
+  const submitOutfitTryOn = async () => {
+    const base = mirrorHttpBase.trim();
+    if (!base) {
+      toast.error('Set Mirror HTTP base');
+      return;
+    }
+    const ids: number[] = [];
+    for (const it of [selectedShirt, selectedPants, selectedAccessory]) {
+      if (!it) continue;
+      const url = primaryImageUrl(it);
+      const img = it.images?.find((i) => i.image_url === url) ?? it.images?.[0];
+      if (img) ids.push(img.id);
+    }
+    if (!ids.length) {
+      toast.error('Select at least one clothing item');
+      return;
+    }
+    setIsGeneratingOutfit(true);
+    try {
+      await generateOutfitTryOn(base, ids);
+      toast.success('Try-on sent to mirror');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Try-on failed');
+    } finally {
+      setIsGeneratingOutfit(false);
     }
   };
 
@@ -846,6 +958,7 @@ export default function App() {
             { id: 'layout', label: 'Layout' },
             { id: 'camera', label: 'Camera' },
             { id: 'wardrobe', label: 'Wardrobe' },
+            { id: 'outfit', label: 'Outfit' },
             { id: 'accounts', label: 'Accounts' },
             { id: 'connection', label: 'Connection' },
           ].map((tab) => (
@@ -944,6 +1057,111 @@ export default function App() {
                   Save Configuration
                 </button>
               </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {uploadModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                setUploadModalOpen(false);
+                setPendingUploadFile(null);
+              }}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden max-h-[90vh] overflow-y-auto"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
+              <div className="relative z-10 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-medium font-[var(--font-display)]">Clothing details</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadModalOpen(false);
+                      setPendingUploadFile(null);
+                    }}
+                    className="text-white/30 hover:text-white/80 transition-colors"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+                <p className="text-xs text-white/45">
+                  Tag this item before the image is uploaded to Cloudinary.
+                </p>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Name *</label>
+                  <input
+                    type="text"
+                    value={uploadMeta.name}
+                    onChange={(e) => setUploadMeta((m) => ({ ...m, name: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Category *</label>
+                  <select
+                    value={uploadMeta.category}
+                    onChange={(e) => setUploadMeta((m) => ({ ...m, category: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm"
+                  >
+                    {CLOTHING_CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Color</label>
+                  <input
+                    type="text"
+                    value={uploadMeta.color ?? ''}
+                    onChange={(e) => setUploadMeta((m) => ({ ...m, color: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Season</label>
+                  <input
+                    type="text"
+                    value={uploadMeta.season ?? ''}
+                    onChange={(e) => setUploadMeta((m) => ({ ...m, season: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Notes</label>
+                  <textarea
+                    value={uploadMeta.notes ?? ''}
+                    onChange={(e) => setUploadMeta((m) => ({ ...m, notes: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm min-h-[72px]"
+                    placeholder="Optional"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void commitUpload()}
+                  disabled={isUploading}
+                  className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isUploading ? <Loader2 className="animate-spin w-4 h-4" /> : null}
+                  Upload
+                </button>
               </div>
             </motion.div>
           </div>
@@ -1356,7 +1574,7 @@ export default function App() {
                 <label className="cursor-pointer text-white/40 hover:text-white transition-colors flex items-center gap-2 text-xs">
                   <span className="hidden sm:inline">Upload Item</span>
                   <Upload size={18} />
-                  <input type="file" className="hidden" onChange={handleFileUpload} accept="image/*" />
+                  <input type="file" className="hidden" onChange={handleFileChosen} accept="image/*" />
                 </label>
               </div>
               
@@ -1375,23 +1593,24 @@ export default function App() {
                     className="relative group"
                   >
                     <GlassCard 
-                      onClick={() =>
+                      onClick={() => {
+                        const url = primaryImageUrl(item);
+                        if (!url) return;
                         sendEnvelopeToMirror({
                           type: 'WARDROBE_UPDATED',
                           version: 2,
                           sessionId: sessionIdRef.current,
                           timestamp: new Date().toISOString(),
                           payload: {
-                            user_id: userId,
-                            selected_image_url: item.image_url,
+                            selected_image_url: url,
                             selected_item_id: item.id,
                           },
-                        })
-                      }
+                        });
+                      }}
                       className="p-0 overflow-hidden aspect-square cursor-pointer"
                     >
                       <img 
-                        src={item.image_url} 
+                        src={primaryImageUrl(item) ?? ''} 
                         alt={item.name}
                         className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
                         referrerPolicy="no-referrer"
@@ -1418,6 +1637,116 @@ export default function App() {
                 </div>
               )}
             </section>}
+
+            {(activeTab === 'layout' || activeTab === 'outfit') && (
+              <section>
+                <div className="flex items-center justify-between mb-4 px-2">
+                  <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold flex items-center gap-2">
+                    <Sparkles size={14} className="text-white/50" />
+                    Outfit generation
+                  </h2>
+                </div>
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <GlassCard className="p-4 space-y-2">
+                    <p className="text-[10px] uppercase tracking-widest text-white/35">Person photo (mirror)</p>
+                    <div className="aspect-[3/4] rounded-xl overflow-hidden bg-white/5 border border-white/10 relative">
+                      {mirrorHttpBase.trim() ? (
+                        <img
+                          key={personImageNonce}
+                          src={`${personImageLatestUrl(mirrorHttpBase.trim())}?t=${personImageNonce}`}
+                          alt="Latest person photo"
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => setPersonImageNonce((n) => n + 1)}
+                        className="absolute bottom-2 right-2 text-[10px] px-2 py-1 rounded-md bg-black/60 text-white/80 hover:bg-black/80"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-white/35">
+                      Uses the latest image saved on the mirror (POST /api/tryon/person-image or Pi capture).
+                    </p>
+                  </GlassCard>
+
+                  <div className="space-y-4">
+                    {(
+                      [
+                        ['shirt', 'Shirt / top', selectedShirt, setSelectedShirt] as const,
+                        ['pants', 'Pants', selectedPants, setSelectedPants] as const,
+                        ['accessories', 'Accessories', selectedAccessory, setSelectedAccessory] as const,
+                      ] as const
+                    ).map(([slot, label, selected, setSelected]) => {
+                      const pool = itemsForSlot(slot);
+                      const cycle = (delta: number) => {
+                        if (!pool.length) return;
+                        const idx = selected ? pool.findIndex((i) => i.id === selected.id) : -1;
+                        const next = (idx + delta + pool.length * 2) % pool.length;
+                        setSelected(pool[next] ?? null);
+                      };
+                      const url = selected ? primaryImageUrl(selected) : null;
+                      return (
+                        <GlassCard key={slot} className="p-3 flex gap-3 items-center">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] uppercase tracking-widest text-white/35 mb-1">{label}</p>
+                            <p className="text-xs text-white/50 truncate">{selected?.name ?? 'None'}</p>
+                          </div>
+                          <div className="w-16 h-16 rounded-lg overflow-hidden bg-white/5 border border-white/10 shrink-0">
+                            {url ? (
+                              <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-[10px] text-white/20">—</div>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <button
+                              type="button"
+                              onClick={() => cycle(-1)}
+                              disabled={!pool.length}
+                              className="text-[10px] px-2 py-1 rounded bg-white/10 disabled:opacity-30"
+                            >
+                              Prev
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => cycle(1)}
+                              disabled={!pool.length}
+                              className="text-[10px] px-2 py-1 rounded bg-white/10 disabled:opacity-30"
+                            >
+                              Next
+                            </button>
+                          </div>
+                        </GlassCard>
+                      );
+                    })}
+                    <div className="flex flex-wrap gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={randomizeOutfit}
+                        className="flex-1 min-w-[120px] bg-white/10 hover:bg-white/15 text-sm py-2.5 rounded-full"
+                      >
+                        Random outfit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void submitOutfitTryOn()}
+                        disabled={isGeneratingOutfit}
+                        className="flex-1 min-w-[120px] bg-white text-black text-sm py-2.5 rounded-full font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        {isGeneratingOutfit ? <Loader2 className="animate-spin w-4 h-4" /> : null}
+                        Generate try-on
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
 
             {activeTab === 'connection' && (
               <section>
