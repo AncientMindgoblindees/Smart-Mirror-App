@@ -379,6 +379,7 @@ export default function App() {
   const [personImageNonce, setPersonImageNonce] = useState(0);
   const [isGeneratingOutfit, setIsGeneratingOutfit] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [cameraLoading, setCameraLoading] = useState(false);
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
     try {
@@ -583,18 +584,34 @@ export default function App() {
     const type = data.type as string | undefined;
     if (type === 'DEVICE_CONNECTED') { toast.success('Paired with mirror'); return; }
     if (type === 'DEVICE_ERROR') { toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Pairing failed')); return; }
+    if (type === 'CAMERA_LOADING_STARTED') {
+      setCameraLoading(true);
+      setCountdown(null);
+      return;
+    }
+    if (type === 'CAMERA_LOADING_READY') {
+      setCameraLoading(false);
+      return;
+    }
     if (type === 'CAMERA_COUNTDOWN_TICK') {
+      setCameraLoading(false);
       const remaining = Number((data.payload as Record<string, unknown>)?.remaining);
       if (Number.isFinite(remaining)) setCountdown(remaining);
       return;
     }
     if (type === 'CAMERA_CAPTURED') {
+      setCameraLoading(false);
       setCountdown(null);
       setPersonImageNonce((n) => n + 1);
       toast.success('Photo captured');
       return;
     }
-    if (type === 'CAMERA_ERROR') { setCountdown(null); toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error')); return; }
+    if (type === 'CAMERA_ERROR') {
+      setCameraLoading(false);
+      setCountdown(null);
+      toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error'));
+      return;
+    }
     if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
     if (type === WIDGETS_REMOTE_UPDATED_EVENT) {
       if (remoteRefreshTimerRef.current) {
@@ -945,10 +962,12 @@ export default function App() {
       return;
     }
     try {
-      setCountdown(3);
+      setCameraLoading(true);
+      setCountdown(null);
       await triggerMirrorCapture(base, sessionIdRef.current);
       toast.success('Capture request sent');
     } catch {
+      setCameraLoading(false);
       setCountdown(null);
       toast.error('Could not trigger capture');
     }
@@ -1594,7 +1613,18 @@ export default function App() {
                 <div className="relative">
                   <div className="w-24 h-24 rounded-full border-2 border-white/10 flex items-center justify-center">
                     <AnimatePresence mode="wait">
-                      {countdown ? (
+                      {cameraLoading ? (
+                        <motion.div
+                          key="camera-loading"
+                          initial={{ scale: 0.8, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          exit={{ scale: 0.9, opacity: 0 }}
+                          className="flex flex-col items-center gap-2 text-white/80"
+                        >
+                          <Loader2 size={26} className="animate-spin" />
+                          <span className="text-[9px] uppercase tracking-wider text-white/60">Loading</span>
+                        </motion.div>
+                      ) : countdown ? (
                         <motion.span 
                           key={countdown}
                           initial={{ scale: 0.5, opacity: 0 }}
@@ -1620,13 +1650,17 @@ export default function App() {
                 </div>
                 <div className="flex flex-col items-center md:items-start gap-2">
                   <h3 className="text-lg font-light">Pose Capture</h3>
-                  <p className="text-xs text-white/40 mb-2">Trigger the mirror's camera for a quick snapshot.</p>
+                  <p className="text-xs text-white/40 mb-2">
+                    {cameraLoading
+                      ? 'Camera Loading... preparing capture pipeline.'
+                      : 'Trigger the mirror\'s camera for a quick snapshot.'}
+                  </p>
                   <button 
                     onClick={triggerCapture}
-                    disabled={!!countdown}
+                    disabled={cameraLoading || !!countdown}
                     className="bg-white text-black px-10 py-3 rounded-full font-medium hover:bg-white/90 transition-all disabled:opacity-50 active:scale-95"
                   >
-                    Capture Pose
+                    {cameraLoading ? 'Loading Camera...' : 'Capture Pose'}
                   </button>
                 </div>
               </GlassCard>
