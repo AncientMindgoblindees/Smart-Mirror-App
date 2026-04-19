@@ -1,3 +1,6 @@
+import { ApiError, requestJson, requestVoid, trimBase } from '../../api/httpClient';
+import { routes } from '../../api/routes';
+
 export interface ClothingImage {
   id: number;
   clothing_item_id: number;
@@ -27,10 +30,6 @@ export interface ClothingItemCreate {
   notes?: string | null;
 }
 
-function trimBase(base: string): string {
-  return base.replace(/\/$/, '');
-}
-
 export function primaryImageUrl(item: ClothingItem): string | null {
   const imgs = item.images;
   if (!imgs?.length) return null;
@@ -41,26 +40,18 @@ export async function listClothingItems(
   baseUrl: string,
   includeImages: boolean
 ): Promise<ClothingItem[]> {
-  const q = includeImages ? '?include_images=true' : '';
-  const res = await fetch(`${trimBase(baseUrl)}/api/clothing${q}`);
-  if (!res.ok) throw new Error(`List clothing failed: ${res.status} ${res.statusText}`);
-  return (await res.json()) as ClothingItem[];
+  return requestJson<ClothingItem[]>(baseUrl, routes.clothingList(includeImages));
 }
 
 export async function createClothingItem(
   baseUrl: string,
   payload: ClothingItemCreate
 ): Promise<ClothingItem> {
-  const res = await fetch(`${trimBase(baseUrl)}/api/clothing/`, {
+  return requestJson<ClothingItem>(baseUrl, routes.clothingCreate, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Create clothing failed: ${res.status} ${t}`);
-  }
-  return (await res.json()) as ClothingItem;
 }
 
 export async function uploadClothingImage(
@@ -70,20 +61,14 @@ export async function uploadClothingImage(
 ): Promise<ClothingImage> {
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch(`${trimBase(baseUrl)}/api/clothing/${itemId}/images`, {
+  return requestJson<ClothingImage>(baseUrl, routes.clothingUploadImage(itemId), {
     method: 'POST',
     body: form,
   });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Upload clothing image failed: ${res.status} ${t}`);
-  }
-  return (await res.json()) as ClothingImage;
 }
 
 export async function deleteClothingItem(baseUrl: string, itemId: number): Promise<void> {
-  const res = await fetch(`${trimBase(baseUrl)}/api/clothing/${itemId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Delete clothing failed: ${res.status} ${res.statusText}`);
+  await requestVoid(baseUrl, routes.clothingDelete(itemId), { method: 'DELETE' });
 }
 
 export async function createClothingWithImage(
@@ -100,7 +85,7 @@ export async function createClothingWithImage(
 }
 
 export function personImageLatestUrl(baseUrl: string): string {
-  return `${trimBase(baseUrl)}/api/tryon/person-image/latest`;
+  return `${trimBase(baseUrl)}${routes.personImageLatest}`;
 }
 
 export interface OutfitGenerateResponse {
@@ -114,7 +99,7 @@ export async function generateOutfitTryOn(
   clothingImageIds: number[],
   prompt?: string | null
 ): Promise<OutfitGenerateResponse> {
-  const res = await fetch(`${trimBase(baseUrl)}/api/tryon/outfit-generate`, {
+  return requestJson<OutfitGenerateResponse>(baseUrl, routes.tryonGenerate, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -122,11 +107,49 @@ export async function generateOutfitTryOn(
       prompt: prompt ?? undefined,
     }),
   });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Try-on failed: ${res.status} ${t}`);
+}
+
+export interface PersonImage {
+  id: number;
+  file_path: string;
+  status: string;
+  created_at: string;
+}
+
+export async function uploadPersonImage(baseUrl: string, file: File): Promise<PersonImage> {
+  const form = new FormData();
+  form.append('file', file);
+  return requestJson<PersonImage>(baseUrl, routes.personImageList, {
+    method: 'POST',
+    body: form,
+  });
+}
+
+export async function listPersonImages(baseUrl: string): Promise<PersonImage[]> {
+  try {
+    return await requestJson<PersonImage[]>(baseUrl, routes.personImageList);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return [];
+    throw error;
   }
-  return (await res.json()) as OutfitGenerateResponse;
+}
+
+export async function getPersonImageById(baseUrl: string, imageId: number): Promise<Blob> {
+  const res = await fetch(`${trimBase(baseUrl)}${routes.personImageById(imageId)}`);
+  if (!res.ok) throw new Error(`GET person image failed: ${res.status} ${res.statusText}`);
+  return res.blob();
+}
+
+export async function patchPersonImageStatus(baseUrl: string, imageId: number, status: string): Promise<PersonImage> {
+  return requestJson<PersonImage>(baseUrl, routes.personImageById(imageId), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function deletePersonImage(baseUrl: string, imageId: number): Promise<void> {
+  await requestVoid(baseUrl, routes.personImageById(imageId), { method: 'DELETE' });
 }
 
 /** Category values stored in DB; used for outfit slot filtering. */

@@ -1,18 +1,14 @@
-function trimBase(base: string): string {
-  return base.replace(/\/$/, '');
-}
+import { requestVoid } from '../../api/httpClient';
+import { routes } from '../../api/routes';
 
 export async function triggerMirrorCapture(baseUrl: string, sessionId: string): Promise<void> {
-  const res = await fetch(`${trimBase(baseUrl)}/api/camera/capture`, {
+  await requestVoid(baseUrl, routes.cameraCapture, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      countdown_seconds: 3,
+      countdown_seconds: 5,
       source: 'mobile-companion',
       session_id: sessionId,
     }),
   });
-  if (!res.ok) {
-    throw new Error(`Capture failed: ${res.status} ${res.statusText}`);
-  }
 }

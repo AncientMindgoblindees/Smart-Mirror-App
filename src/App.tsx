@@ -39,14 +39,21 @@ import {
   mirrorAuthStartDeviceLogin,
   mirrorAuthLogout,
   mirrorOAuthWebStartUrl,
+  mirrorGetCalendarEvents,
+  mirrorGetCalendarTasks,
   type MirrorAuthProviderStatus,
 } from './lib/mirrorApi';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
-import type { WidgetConfigOut } from './types/mirror';
+import type { CalendarEventItem, WidgetConfigOut } from './types/mirror';
 import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
-import { getMirrorHttpBase, getMirrorWsUrl } from './lib/connectionConfig';
+import {
+  getMirrorHttpBase,
+  getMirrorWsUrl,
+  setMirrorHttpBase as persistMirrorHttpBase,
+  setMirrorWsUrl as persistMirrorWsUrl,
+} from './lib/connectionConfig';
 import { FluidDropdown } from './components/ui/fluid-dropdown';
 import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } from './lib/widgetSizePresets';
 import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
@@ -63,9 +70,7 @@ import {
   type ClothingItem,
   type ClothingItemCreate,
 } from './features/wardrobe/clothingApi';
-
-const MIRROR_HTTP_STORAGE_KEY = 'mirror_http_base';
-const MIRROR_WS_STORAGE_KEY = 'mirror_ws_url';
+import { useWardrobeActions } from './features/wardrobe/useWardrobeActions';
 
 function isLoopbackHost(host: string): boolean {
   const h = host.trim().toLowerCase();
@@ -374,6 +379,7 @@ export default function App() {
   const [personImageNonce, setPersonImageNonce] = useState(0);
   const [isGeneratingOutfit, setIsGeneratingOutfit] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [cameraLoading, setCameraLoading] = useState(false);
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
     try {
@@ -390,7 +396,7 @@ export default function App() {
     try {
       // Prefer saved URL; else use env-aware default (production → https://mirror.smart-mirror.tech).
       // Do not use same-host :8002 when the app is served from Pages at smart-mirror.tech.
-      return localStorage.getItem(MIRROR_HTTP_STORAGE_KEY) ?? getMirrorHttpBase();
+      return getMirrorHttpBase();
     } catch {
       return getMirrorHttpBase();
     }
@@ -404,6 +410,11 @@ export default function App() {
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
   const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
+  const [calendarEventsPreview, setCalendarEventsPreview] = useState<CalendarEventItem[]>([]);
+  const [calendarTasksPreview, setCalendarTasksPreview] = useState<CalendarEventItem[]>([]);
+  const [calendarPreviewProviders, setCalendarPreviewProviders] = useState<string[]>([]);
+  const [calendarPreviewLastSync, setCalendarPreviewLastSync] = useState<string | null>(null);
+  const [calendarPreviewLoading, setCalendarPreviewLoading] = useState(false);
   const remoteRefreshInFlightRef = useRef(false);
   const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
 
@@ -460,11 +471,7 @@ export default function App() {
       if (resolvedBase !== configuredBase) {
         setMirrorHttpBase(resolvedBase);
         mirrorHttpRef.current = resolvedBase;
-        try {
-          localStorage.setItem(MIRROR_HTTP_STORAGE_KEY, resolvedBase);
-        } catch {
-          /* ignore */
-        }
+        persistMirrorHttpBase(resolvedBase);
       }
       if (!opts?.silent) toast.success('Loaded layout from mirror');
       setHttpSyncState('saved');
@@ -506,12 +513,39 @@ export default function App() {
     }
   }, []);
 
+  const loadCalendarPreview = useCallback(async () => {
+    const base = mirrorHttpRef.current.trim();
+    if (!base) return;
+    setCalendarPreviewLoading(true);
+    try {
+      const [eventsRes, tasksRes] = await Promise.all([
+        mirrorGetCalendarEvents(base, { days: 7 }),
+        mirrorGetCalendarTasks(base),
+      ]);
+      setCalendarEventsPreview(eventsRes.events.slice(0, 4));
+      setCalendarTasksPreview(tasksRes.tasks.slice(0, 4));
+      setCalendarPreviewProviders(Array.from(new Set([...eventsRes.providers, ...tasksRes.providers])));
+      setCalendarPreviewLastSync(eventsRes.last_sync ?? tasksRes.last_sync ?? null);
+    } catch {
+      setCalendarEventsPreview([]);
+      setCalendarTasksPreview([]);
+      setCalendarPreviewProviders([]);
+      setCalendarPreviewLastSync(null);
+    } finally {
+      setCalendarPreviewLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab !== 'accounts') return;
     void loadMirrorAuth();
-    const id = window.setInterval(() => void loadMirrorAuth(), 8000);
+    void loadCalendarPreview();
+    const id = window.setInterval(() => {
+      void loadMirrorAuth();
+      void loadCalendarPreview();
+    }, 8000);
     return () => clearInterval(id);
-  }, [activeTab, loadMirrorAuth]);
+  }, [activeTab, loadMirrorAuth, loadCalendarPreview]);
 
   const schedulePushLayoutToMirror = useCallback(
     (list: Widget[]) => {
@@ -550,13 +584,34 @@ export default function App() {
     const type = data.type as string | undefined;
     if (type === 'DEVICE_CONNECTED') { toast.success('Paired with mirror'); return; }
     if (type === 'DEVICE_ERROR') { toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Pairing failed')); return; }
+    if (type === 'CAMERA_LOADING_STARTED') {
+      setCameraLoading(true);
+      setCountdown(null);
+      return;
+    }
+    if (type === 'CAMERA_LOADING_READY') {
+      setCameraLoading(false);
+      return;
+    }
     if (type === 'CAMERA_COUNTDOWN_TICK') {
+      setCameraLoading(false);
       const remaining = Number((data.payload as Record<string, unknown>)?.remaining);
       if (Number.isFinite(remaining)) setCountdown(remaining);
       return;
     }
-    if (type === 'CAMERA_CAPTURED') { setCountdown(null); toast.success('Photo captured'); return; }
-    if (type === 'CAMERA_ERROR') { setCountdown(null); toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error')); return; }
+    if (type === 'CAMERA_CAPTURED') {
+      setCameraLoading(false);
+      setCountdown(null);
+      setPersonImageNonce((n) => n + 1);
+      toast.success('Photo captured');
+      return;
+    }
+    if (type === 'CAMERA_ERROR') {
+      setCameraLoading(false);
+      setCountdown(null);
+      toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error'));
+      return;
+    }
     if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
     if (type === WIDGETS_REMOTE_UPDATED_EVENT) {
       if (remoteRefreshTimerRef.current) {
@@ -590,6 +645,10 @@ export default function App() {
       toast.error('Mirror not connected');
     }
   };
+  const { notifyWardrobeUpdated, clearDeletedSelection } = useWardrobeActions(
+    sessionIdRef.current,
+    sendEnvelopeToMirror,
+  );
 
   const syncStateToMirror = useCallback((currentWidgets?: Widget[]) => {
     const widgetsToSync = currentWidgets ?? widgetsRef.current;
@@ -677,13 +736,7 @@ export default function App() {
       toast.success('Item added to wardrobe');
       setUploadModalOpen(false);
       setPendingUploadFile(null);
-      sendEnvelopeToMirror({
-        type: 'WARDROBE_UPDATED',
-        version: 2,
-        sessionId: sessionIdRef.current,
-        timestamp: new Date().toISOString(),
-        payload: {},
-      });
+      notifyWardrobeUpdated();
     } catch {
       toast.error('Upload failed');
     } finally {
@@ -698,17 +751,17 @@ export default function App() {
       await deleteClothingItem(base, id);
       setWardrobe((prev) => prev.filter((item) => item.id !== id));
       setOutfitItems((prev) => prev.filter((item) => item.id !== id));
-      setSelectedShirt((s) => (s?.id === id ? null : s));
-      setSelectedPants((s) => (s?.id === id ? null : s));
-      setSelectedAccessory((s) => (s?.id === id ? null : s));
+      clearDeletedSelection(
+        id,
+        { shirt: selectedShirt, pants: selectedPants, accessory: selectedAccessory },
+        {
+          setShirt: setSelectedShirt,
+          setPants: setSelectedPants,
+          setAccessory: setSelectedAccessory,
+        },
+      );
       toast.success('Item removed');
-      sendEnvelopeToMirror({
-        type: 'WARDROBE_UPDATED',
-        version: 2,
-        sessionId: sessionIdRef.current,
-        timestamp: new Date().toISOString(),
-        payload: {},
-      });
+      notifyWardrobeUpdated();
     } catch {
       toast.error('Delete failed');
     }
@@ -909,10 +962,12 @@ export default function App() {
       return;
     }
     try {
-      setCountdown(3);
+      setCameraLoading(true);
+      setCountdown(null);
       await triggerMirrorCapture(base, sessionIdRef.current);
       toast.success('Capture request sent');
     } catch {
+      setCameraLoading(false);
       setCountdown(null);
       toast.error('Could not trigger capture');
     }
@@ -1042,12 +1097,8 @@ export default function App() {
                   onClick={() => {
                     const v = mirrorHttpDraft.trim();
                     const nextWs = wsUrlDraft.trim();
-                    try {
-                      localStorage.setItem(MIRROR_HTTP_STORAGE_KEY, v);
-                      localStorage.setItem(MIRROR_WS_STORAGE_KEY, nextWs);
-                    } catch {
-                      /* ignore */
-                    }
+                    persistMirrorHttpBase(v);
+                    if (nextWs) persistMirrorWsUrl(nextWs);
                     setMirrorHttpBase(v);
                     if (nextWs) setWsUrl(nextWs);
                     setShowSettings(false);
@@ -1451,6 +1502,39 @@ export default function App() {
                 </ul>
               )}
             </GlassCard>
+            <GlassCard className="space-y-3">
+              <h3 className="text-sm font-medium text-white/90">Calendar + tasks preview</h3>
+              {calendarPreviewLoading ? (
+                <p className="text-xs text-white/35">Loading feed preview...</p>
+              ) : (
+                <>
+                  <p className="text-xs text-white/45">
+                    Events: {calendarEventsPreview.length} · Tasks: {calendarTasksPreview.length}
+                  </p>
+                  <p className="text-xs text-white/35">
+                    Providers: {calendarPreviewProviders.length ? calendarPreviewProviders.join(', ') : 'none'}
+                  </p>
+                  <p className="text-xs text-white/30">
+                    Last sync: {calendarPreviewLastSync ?? 'unknown'}
+                  </p>
+                  <div className="space-y-1">
+                    {calendarEventsPreview.map((event) => (
+                      <p key={`evt-${event.id}`} className="text-xs text-white/60 truncate">
+                        Event: {event.title}
+                      </p>
+                    ))}
+                    {calendarTasksPreview.map((task) => (
+                      <p key={`task-${task.id}`} className="text-xs text-white/60 truncate">
+                        Task: {task.title}
+                      </p>
+                    ))}
+                    {calendarEventsPreview.length === 0 && calendarTasksPreview.length === 0 && (
+                      <p className="text-xs text-white/35">No preview data available.</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </GlassCard>
           </section>
         ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
@@ -1529,7 +1613,18 @@ export default function App() {
                 <div className="relative">
                   <div className="w-24 h-24 rounded-full border-2 border-white/10 flex items-center justify-center">
                     <AnimatePresence mode="wait">
-                      {countdown ? (
+                      {cameraLoading ? (
+                        <motion.div
+                          key="camera-loading"
+                          initial={{ scale: 0.8, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          exit={{ scale: 0.9, opacity: 0 }}
+                          className="flex flex-col items-center gap-2 text-white/80"
+                        >
+                          <Loader2 size={26} className="animate-spin" />
+                          <span className="text-[9px] uppercase tracking-wider text-white/60">Loading</span>
+                        </motion.div>
+                      ) : countdown ? (
                         <motion.span 
                           key={countdown}
                           initial={{ scale: 0.5, opacity: 0 }}
@@ -1555,13 +1650,17 @@ export default function App() {
                 </div>
                 <div className="flex flex-col items-center md:items-start gap-2">
                   <h3 className="text-lg font-light">Pose Capture</h3>
-                  <p className="text-xs text-white/40 mb-2">Trigger the mirror's camera for a quick snapshot.</p>
+                  <p className="text-xs text-white/40 mb-2">
+                    {cameraLoading
+                      ? 'Camera Loading... preparing capture pipeline.'
+                      : 'Trigger the mirror\'s camera for a quick snapshot.'}
+                  </p>
                   <button 
                     onClick={triggerCapture}
-                    disabled={!!countdown}
+                    disabled={cameraLoading || !!countdown}
                     className="bg-white text-black px-10 py-3 rounded-full font-medium hover:bg-white/90 transition-all disabled:opacity-50 active:scale-95"
                   >
-                    Capture Pose
+                    {cameraLoading ? 'Loading Camera...' : 'Capture Pose'}
                   </button>
                 </div>
               </GlassCard>
@@ -1596,15 +1695,9 @@ export default function App() {
                       onClick={() => {
                         const url = primaryImageUrl(item);
                         if (!url) return;
-                        sendEnvelopeToMirror({
-                          type: 'WARDROBE_UPDATED',
-                          version: 2,
-                          sessionId: sessionIdRef.current,
-                          timestamp: new Date().toISOString(),
-                          payload: {
-                            selected_image_url: url,
-                            selected_item_id: item.id,
-                          },
+                        notifyWardrobeUpdated({
+                          selected_image_url: url,
+                          selected_item_id: item.id,
                         });
                       }}
                       className="p-0 overflow-hidden aspect-square cursor-pointer"

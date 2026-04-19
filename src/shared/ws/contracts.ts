@@ -61,3 +61,19 @@ export function createWidgetsSyncEnvelope(sessionId: string, widgets: Widget[]):
     },
   };
 }
+
+export function createWardrobeUpdatedEnvelope(
+  sessionId: string,
+  payload: {
+    selected_image_url?: string;
+    selected_item_id?: number;
+  } = {},
+): ControlEnvelope {
+  return {
+    type: 'WARDROBE_UPDATED',
+    version: 2,
+    sessionId,
+    timestamp: new Date().toISOString(),
+    payload,
+  };
+}
