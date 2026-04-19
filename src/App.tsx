@@ -588,7 +588,12 @@ export default function App() {
       if (Number.isFinite(remaining)) setCountdown(remaining);
       return;
     }
-    if (type === 'CAMERA_CAPTURED') { setCountdown(null); toast.success('Photo captured'); return; }
+    if (type === 'CAMERA_CAPTURED') {
+      setCountdown(null);
+      setPersonImageNonce((n) => n + 1);
+      toast.success('Photo captured');
+      return;
+    }
     if (type === 'CAMERA_ERROR') { setCountdown(null); toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error')); return; }
     if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
     if (type === WIDGETS_REMOTE_UPDATED_EVENT) {

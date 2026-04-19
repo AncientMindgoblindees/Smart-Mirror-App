@@ -6,7 +6,7 @@ export async function triggerMirrorCapture(baseUrl: string, sessionId: string): 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      countdown_seconds: 5,
+      countdown_seconds: 3,
       source: 'mobile-companion',
       session_id: sessionId,
     }),
