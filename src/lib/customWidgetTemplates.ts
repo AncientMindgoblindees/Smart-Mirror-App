@@ -3,7 +3,8 @@ export type WidgetTemplateKind =
   | 'reminders'
   | 'clock'
   | 'weather'
-  | 'calendar';
+  | 'calendar'
+  | 'email';
 
 export type WidgetTemplateCategory = 'lifestyle' | 'desk' | 'tech' | 'home';
 
@@ -56,6 +57,17 @@ export const CUSTOM_WIDGET_TEMPLATES: CustomWidgetTemplate[] = [
     category: 'lifestyle',
     x: 10,
     y: 75,
+    width: 32,
+    height: 20,
+  },
+  {
+    id: 'email-core',
+    mirrorWidgetId: 'email',
+    label: 'Email',
+    kind: 'email',
+    category: 'desk',
+    x: 55,
+    y: 42,
     width: 32,
     height: 20,
   },

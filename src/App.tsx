@@ -124,6 +124,11 @@ const CALENDAR_VIEW_ITEMS = [
   { id: 'month', label: 'Month' },
 ] as const;
 
+const CALENDAR_TIME_FORMAT_ITEMS = [
+  { id: '12h', label: '12-hour' },
+  { id: '24h', label: '24-hour' },
+] as const;
+
 function cloneWidgetForSettingsDraft(w: Widget): Widget {
   return {
     ...w,
@@ -922,7 +927,11 @@ export default function App() {
         break;
       case 'calendar':
         name = 'Calendar';
-        config = { view: 'month', showEvents: true };
+        config = { view: 'month', showEvents: true, timeFormat: '24h' };
+        break;
+      case 'email':
+        name = 'Email';
+        config = { limit: 8, mode: 'unread_or_high' };
         break;
       case 'reminders':
         name = 'Reminders';
@@ -1322,6 +1331,15 @@ export default function App() {
                         items={[...CALENDAR_VIEW_ITEMS]}
                         value={String(widgetSettingsDraft.config.view ?? 'month') as 'day' | 'week' | 'month'}
                         onChange={(value) => patchWidgetSettingsDraftConfig({ view: value })}
+                        className="max-w-none"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Time Format</label>
+                      <FluidDropdown
+                        items={[...CALENDAR_TIME_FORMAT_ITEMS]}
+                        value={String(widgetSettingsDraft.config.timeFormat ?? '24h') as '12h' | '24h'}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ timeFormat: value })}
                         className="max-w-none"
                       />
                     </div>
