@@ -129,7 +129,7 @@ export const DEFAULT_WIDGET_SNAPSHOTS: WidgetLayoutSnapshot[] = [
     x: 10,
     y: 75,
     ...WIDGET_SIZE_PRESETS.medium,
-    config: { view: 'month', showEvents: true },
+    config: { view: 'month', showEvents: true, timeFormat: '24h' },
   },
   {
     id: 'reminders',
