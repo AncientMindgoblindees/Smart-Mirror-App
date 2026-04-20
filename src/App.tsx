@@ -929,6 +929,10 @@ export default function App() {
         name = 'Calendar';
         config = { view: 'month', showEvents: true, timeFormat: '24h' };
         break;
+      case 'email':
+        name = 'Email';
+        config = { limit: 8, mode: 'unread_or_high' };
+        break;
       case 'reminders':
         name = 'Reminders';
         config = { limit: 5, showCompleted: false };

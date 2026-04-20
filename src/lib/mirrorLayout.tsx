@@ -11,6 +11,7 @@ import {
   Type,
   Newspaper,
   Sparkles,
+  Mail,
 } from 'lucide-react';
 import type { WidgetConfigOut, WidgetConfigUpdate } from '../types/mirror';
 import { clampFreeformPercentBox, normalizeFreeformFromStorage } from './freeformNormalize';
@@ -88,6 +89,7 @@ function displayName(widgetId: string): string {
     clock: 'Clock',
     weather: 'Weather',
     calendar: 'Calendar',
+    email: 'Email',
     reminders: 'Reminders',
     sticky_note: 'Sticky note',
     daily_quote: 'Daily quote',
@@ -140,6 +142,15 @@ export const DEFAULT_WIDGET_SNAPSHOTS: WidgetLayoutSnapshot[] = [
     ...WIDGET_SIZE_PRESETS.medium,
     config: { limit: 5, showCompleted: false },
   },
+  {
+    id: 'email',
+    type: 'builtin',
+    name: 'Email',
+    x: 55,
+    y: 42,
+    ...WIDGET_SIZE_PRESETS.medium,
+    config: { limit: 8, mode: 'unread_or_high' },
+  },
 ];
 
 export function hydrateWidgetsFromSnapshots(items: WidgetLayoutSnapshot[]): MirrorWidget[] {
@@ -165,6 +176,8 @@ export function mirrorWidgetIcon(widgetId: string): React.ReactNode {
       return <Cloud size={18} />;
     case 'calendar':
       return <Calendar size={18} />;
+    case 'email':
+      return <Mail size={18} />;
     case 'reminders':
       return <ListTodo size={18} />;
     case 'sticky_note':
