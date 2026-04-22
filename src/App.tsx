@@ -65,6 +65,7 @@ import { PublicMirrorSettingsModal, type PublicMirrorSettingsDraft, type PublicM
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type {
   CalendarEventItem,
+  MirrorBootstrapContext,
   MirrorAuthPairingStatusResponse,
   MirrorAuthPairingTokenExchangeResponse,
   MirrorSessionResponse,
@@ -76,6 +77,7 @@ import { MirrorConnectionManager } from './lib/connectionManager';
 import {
   buildScopedWsUrl,
   clearMirrorLegacyUserId,
+  deriveMirrorWsUrl,
   getMirrorHardwareId,
   getMirrorHardwareToken,
   getMirrorHttpBase,
@@ -163,6 +165,8 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
 type PairingQueryState = {
   pairingId: string;
   pairingCode: string;
+  mirrorHttpBase: string;
+  hardwareId: string;
 };
 
 const PENDING_PAIRING_HANDOFF_STORAGE_KEY = 'smart_mirror_pending_pairing_handoff';
@@ -178,27 +182,29 @@ function mergePairingState(
     (acc, state) => ({
       pairingId: acc.pairingId || state?.pairingId?.trim() || '',
       pairingCode: acc.pairingCode || normalizePairingCode(state?.pairingCode ?? ''),
+      mirrorHttpBase: acc.mirrorHttpBase || state?.mirrorHttpBase?.trim() || '',
+      hardwareId: acc.hardwareId || state?.hardwareId?.trim() || '',
     }),
-    { pairingId: '', pairingCode: '' },
+    { pairingId: '', pairingCode: '', mirrorHttpBase: '', hardwareId: '' },
   );
 }
 
 function readPendingPairingHandoff(): PairingQueryState {
-  if (typeof window === 'undefined') return { pairingId: '', pairingCode: '' };
+  if (typeof window === 'undefined') return { pairingId: '', pairingCode: '', mirrorHttpBase: '', hardwareId: '' };
   try {
     const raw = window.sessionStorage.getItem(PENDING_PAIRING_HANDOFF_STORAGE_KEY);
-    if (!raw) return { pairingId: '', pairingCode: '' };
+    if (!raw) return { pairingId: '', pairingCode: '', mirrorHttpBase: '', hardwareId: '' };
     const parsed = JSON.parse(raw) as Partial<PairingQueryState>;
     return mergePairingState(parsed);
   } catch {
-    return { pairingId: '', pairingCode: '' };
+    return { pairingId: '', pairingCode: '', mirrorHttpBase: '', hardwareId: '' };
   }
 }
 
 function persistPendingPairingHandoff(state: Partial<PairingQueryState>): PairingQueryState {
   const next = mergePairingState(state);
   if (typeof window === 'undefined') return next;
-  if (!next.pairingId && !next.pairingCode) {
+  if (!next.pairingId && !next.pairingCode && !next.mirrorHttpBase && !next.hardwareId) {
     window.sessionStorage.removeItem(PENDING_PAIRING_HANDOFF_STORAGE_KEY);
     return next;
   }
@@ -246,11 +252,13 @@ function persistDeviceSettingsDraft(draft: PublicMirrorSettingsDraft): PublicMir
 }
 
 function readPairingQueryFromWindow(): PairingQueryState {
-  if (typeof window === 'undefined') return { pairingId: '', pairingCode: '' };
+  if (typeof window === 'undefined') return { pairingId: '', pairingCode: '', mirrorHttpBase: '', hardwareId: '' };
   const search = new URLSearchParams(window.location.search);
   return {
     pairingId: search.get('pairing_id')?.trim() ?? '',
     pairingCode: normalizePairingCode(search.get('pairing_code') ?? ''),
+    mirrorHttpBase: search.get('mirror_base_url')?.trim() ?? '',
+    hardwareId: search.get('mirror_hardware_id')?.trim() ?? search.get('hardware_id')?.trim() ?? '',
   };
 }
 
@@ -259,7 +267,24 @@ function clearPairingQueryFromWindow(): void {
   const url = new URL(window.location.href);
   url.searchParams.delete('pairing_id');
   url.searchParams.delete('pairing_code');
+  url.searchParams.delete('mirror_base_url');
+  url.searchParams.delete('mirror_hardware_id');
+  url.searchParams.delete('hardware_id');
   window.history.replaceState({}, document.title, url.toString());
+}
+
+function applyMirrorBootstrapContext(context: MirrorBootstrapContext | null | undefined): void {
+  if (!context) return;
+  const mirrorHttpBase = (context.mirror_base_url || '').trim();
+  const hardwareId = context.hardware_id.trim();
+  const hardwareToken = context.hardware_token.trim();
+  const wsUrl = (context.ws_url || '').trim() || deriveMirrorWsUrl(mirrorHttpBase);
+
+  if (mirrorHttpBase) persistMirrorHttpBase(mirrorHttpBase);
+  if (wsUrl) persistMirrorWsUrl(wsUrl);
+  if (hardwareId) persistMirrorHardwareId(hardwareId);
+  if (hardwareToken) persistMirrorHardwareToken(hardwareToken);
+  clearMirrorLegacyUserId();
 }
 
 function formatErrorMessage(error: unknown, fallback: string): string {
@@ -1326,6 +1351,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
         const exchange = await mirrorExchangeAuthPairingToken(base, pairingId, {
           replace_current_session: replaceCurrentSession,
         });
+        applyMirrorBootstrapContext(exchange.mirror_context);
 
         if (exchange.user.uid !== firebaseUser.uid && !replaceCurrentSession) {
           setPendingReplacement(exchange);
@@ -2670,6 +2696,10 @@ export default function App() {
   const [settingsStatus, setSettingsStatus] = useState<PublicMirrorSettingsStatus | null>(null);
   const signedOutPairingMarkerRef = useRef('');
 
+  const syncSettingsDraftFromStorage = useCallback(() => {
+    setSettingsDraft(readDeviceSettingsDraft());
+  }, []);
+
   useEffect(() => {
     void ensureFirebaseAuthReady().catch(() => undefined);
     const unsubscribe = subscribeToFirebaseAuth((user) => {
@@ -2727,6 +2757,15 @@ export default function App() {
 
   const handleGoogleSignIn = useCallback(async (handoff?: Partial<PairingQueryState>) => {
     const nextHandoff = buildPairingHandoff(handoff);
+    if (nextHandoff.mirrorHttpBase || nextHandoff.hardwareId) {
+      applyMirrorBootstrapContext({
+        hardware_id: nextHandoff.hardwareId || getMirrorHardwareId() || '',
+        hardware_token: getMirrorHardwareToken() || '',
+        mirror_base_url: nextHandoff.mirrorHttpBase || getMirrorHttpBase(),
+        ws_url: deriveMirrorWsUrl(nextHandoff.mirrorHttpBase || getMirrorHttpBase()),
+      });
+      syncSettingsDraftFromStorage();
+    }
     if (hasPairingState(nextHandoff)) {
       persistPendingPairingHandoff(nextHandoff);
       if (nextHandoff.pairingCode) {
@@ -2752,11 +2791,20 @@ export default function App() {
     } finally {
       setSignInBusy(false);
     }
-  }, [buildPairingHandoff]);
+  }, [buildPairingHandoff, syncSettingsDraftFromStorage]);
 
   const exchangeSignedOutPairing = useCallback(
     async (handoff: PairingQueryState) => {
-      const base = settingsDraft.mirrorHttpBase.trim();
+      if (handoff.mirrorHttpBase || handoff.hardwareId) {
+        applyMirrorBootstrapContext({
+          hardware_id: handoff.hardwareId || getMirrorHardwareId() || '',
+          hardware_token: getMirrorHardwareToken() || '',
+          mirror_base_url: handoff.mirrorHttpBase || getMirrorHttpBase(),
+          ws_url: deriveMirrorWsUrl(handoff.mirrorHttpBase || getMirrorHttpBase()),
+        });
+        syncSettingsDraftFromStorage();
+      }
+      const base = (handoff.mirrorHttpBase || settingsDraft.mirrorHttpBase).trim();
       if (!base) {
         setNotice({
           tone: 'warning',
@@ -2781,6 +2829,8 @@ export default function App() {
         const exchange = await mirrorExchangeAuthPairingToken(base, handoff.pairingId, {
           pairing_code: handoff.pairingCode,
         });
+        applyMirrorBootstrapContext(exchange.mirror_context);
+        syncSettingsDraftFromStorage();
         await signInWithFirebaseCustomToken(exchange.custom_token);
         clearPairingQueryFromWindow();
         clearPendingPairingHandoff();
@@ -2798,7 +2848,7 @@ export default function App() {
         setPairingBusy(false);
       }
     },
-    [settingsDraft.mirrorHttpBase],
+    [settingsDraft.mirrorHttpBase, syncSettingsDraftFromStorage],
   );
 
   const handleRedeemPairingCode = useCallback(async () => {
