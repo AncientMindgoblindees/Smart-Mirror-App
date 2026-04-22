@@ -73,7 +73,7 @@ function noticeToneClasses(tone: PrivateLoginGateNoticeTone): string {
 export function PrivateLoginGate({
   mode,
   title = 'Private mirror access',
-  subtitle = 'Sign in with Google to unlock your personal mirror data, or redeem a pairing code from the mirror to finish account setup.',
+  subtitle = 'Sign in with Google to unlock your personal mirror data. If the mirror started account setup, return here from the QR/deep link or continue with Google before redeeming a manual code.',
   appName = 'Smart Mirror',
   pairingCode,
   onPairingCodeChange,
@@ -172,7 +172,7 @@ export function PrivateLoginGate({
                     <div className="flex-1">
                       <h2 className="text-lg font-semibold text-white">Redeem a pairing code</h2>
                       <p className="mt-2 text-sm text-white/55">
-                        Use this when account setup started from the mirror screen or a QR code on the device.
+                        Use this when account setup started from the mirror screen. QR and deep-link returns can finish here directly, while manual codes may first continue through Google sign-in.
                       </p>
                     </div>
                   </div>
@@ -202,7 +202,7 @@ export function PrivateLoginGate({
 
                   <div className="mt-4 flex items-start gap-2 text-xs text-white/40">
                     <Smartphone size={14} className="mt-0.5 shrink-0" />
-                    Mirror-only QR flows should finish here before the app signs in as that person.
+                    The app only finishes pairing with the contract the backend exposes for this mirror.
                   </div>
                 </div>
 

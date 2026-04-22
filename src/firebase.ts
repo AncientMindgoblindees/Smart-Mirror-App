@@ -1,10 +1,12 @@
 import { initializeApp } from "firebase/app";
 import {
   GoogleAuthProvider,
+  getRedirectResult,
   getAuth,
   onAuthStateChanged,
   setPersistence,
   signInWithCustomToken,
+  signInWithRedirect,
   signInWithPopup,
   signOut,
   browserLocalPersistence,
@@ -34,9 +36,36 @@ googleAuthProvider.setCustomParameters({
 });
 
 let authReadyPromise: Promise<User | null> | null = null;
+let authPersistencePromise: Promise<void> | null = null;
 
 async function ensureAuthPersistence(): Promise<void> {
-  await setPersistence(auth, browserLocalPersistence);
+  if (!authPersistencePromise) {
+    authPersistencePromise = setPersistence(auth, browserLocalPersistence).catch((error) => {
+      authPersistencePromise = null;
+      throw error;
+    });
+  }
+  await authPersistencePromise;
+}
+
+function prefersRedirectGoogleSignIn(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches
+    || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+  if (standalone) return true;
+
+  return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+}
+
+function shouldFallbackToRedirect(error: unknown): boolean {
+  const code = typeof error === 'object' && error && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+
+  return code === 'auth/popup-blocked'
+    || code === 'auth/operation-not-supported-in-this-environment'
+    || code === 'auth/web-storage-unsupported';
 }
 
 export function ensureFirebaseAuthReady(): Promise<User | null> {
@@ -78,9 +107,25 @@ export async function getCurrentFirebaseIdToken(
   return user.getIdToken(forceRefresh);
 }
 
-export async function signInWithGoogle(): Promise<UserCredential> {
+export async function signInWithGoogle(): Promise<UserCredential | null> {
   await ensureAuthPersistence();
-  return signInWithPopup(auth, googleAuthProvider);
+  if (prefersRedirectGoogleSignIn()) {
+    await signInWithRedirect(auth, googleAuthProvider);
+    return null;
+  }
+
+  try {
+    return await signInWithPopup(auth, googleAuthProvider);
+  } catch (error) {
+    if (!shouldFallbackToRedirect(error)) throw error;
+    await signInWithRedirect(auth, googleAuthProvider);
+    return null;
+  }
+}
+
+export async function consumeGoogleRedirectResult(): Promise<UserCredential | null> {
+  await ensureAuthPersistence();
+  return getRedirectResult(auth);
 }
 
 export async function signInWithFirebaseCustomToken(
