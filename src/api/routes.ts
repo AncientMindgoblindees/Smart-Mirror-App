@@ -1,6 +1,8 @@
 export const routes = {
   sessionMe: '/api/session/me',
   widgets: '/api/widgets/',
+  profileList: '/api/profile/',
+  profileDelete: (userId: string) => `/api/profile/${encodeURIComponent(userId)}`,
   authProviders: '/api/auth/providers',
   authLogin: (provider: string) => `/api/auth/login/${provider}`,
   authLogout: (provider: string) => `/api/auth/logout/${provider}`,

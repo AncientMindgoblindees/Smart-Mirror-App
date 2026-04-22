@@ -3,6 +3,7 @@ const MIRROR_WS_STORAGE_KEY = 'mirror_ws_url';
 const MIRROR_HARDWARE_ID_STORAGE_KEY = 'mirror_hardware_id';
 const MIRROR_HARDWARE_TOKEN_STORAGE_KEY = 'mirror_hardware_token';
 const MIRROR_ACTIVE_USER_ID_STORAGE_KEY = 'mirror_active_user_id';
+const MIRROR_USER_ID_STORAGE_KEY = 'mirror_user_id';
 
 export type MirrorEnv = 'production' | 'development';
 
@@ -41,11 +42,23 @@ export function getMirrorHttpBase(): string {
 }
 
 export function getMirrorWsUrl(): string {
+  const identity = getMirrorIdentityContext();
+  const withIdentity = (value: string): string => {
+    if (!identity) return value;
+    try {
+      const url = new URL(value);
+      url.searchParams.set('hardware_id', identity.hardwareId);
+      url.searchParams.set('user_id', identity.userId);
+      return url.toString();
+    } catch {
+      return value;
+    }
+  };
   try {
     const stored = localStorage.getItem(MIRROR_WS_STORAGE_KEY);
-    if (stored?.trim()) return stored.trim();
+    if (stored?.trim()) return withIdentity(stored.trim());
   } catch { /* ignore */ }
-  return ENV_DEFAULTS[detectEnv()].ws;
+  return withIdentity(ENV_DEFAULTS[detectEnv()].ws);
 }
 
 export function setMirrorHttpBase(base: string): void {
@@ -60,6 +73,22 @@ export function getMirrorHardwareId(): string | null {
   try {
     const stored = localStorage.getItem(MIRROR_HARDWARE_ID_STORAGE_KEY);
     return stored?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export type MirrorIdentityContext = {
+  hardwareId: string;
+  userId: string;
+};
+
+export function getMirrorIdentityContext(): MirrorIdentityContext | null {
+  try {
+    const hardwareId = localStorage.getItem(MIRROR_HARDWARE_ID_STORAGE_KEY)?.trim() || '';
+    const userId = localStorage.getItem(MIRROR_USER_ID_STORAGE_KEY)?.trim() || '';
+    if (!hardwareId || !userId) return null;
+    return { hardwareId, userId };
   } catch {
     return null;
   }
@@ -128,5 +157,26 @@ export function buildScopedWsUrl(baseWsUrl: string): string {
     return url.toString();
   } catch {
     return baseWsUrl;
+  }
+}
+
+export function setMirrorIdentityContext(ctx: { hardwareId?: string; userId?: string }): void {
+  try {
+    if (ctx.hardwareId !== undefined) {
+      if (ctx.hardwareId.trim()) {
+        localStorage.setItem(MIRROR_HARDWARE_ID_STORAGE_KEY, ctx.hardwareId.trim());
+      } else {
+        localStorage.removeItem(MIRROR_HARDWARE_ID_STORAGE_KEY);
+      }
+    }
+    if (ctx.userId !== undefined) {
+      if (ctx.userId.trim()) {
+        localStorage.setItem(MIRROR_USER_ID_STORAGE_KEY, ctx.userId.trim());
+      } else {
+        localStorage.removeItem(MIRROR_USER_ID_STORAGE_KEY);
+      }
+    }
+  } catch {
+    /* ignore */
   }
 }

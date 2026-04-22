@@ -36,6 +36,17 @@ export interface WidgetConfigUpdate {
   config_json?: Record<string, unknown> | null;
 }
 
+export interface MirrorProfile {
+  id: number;
+  mirror_id: string;
+  user_id: string;
+  display_name?: string | null;
+  widget_config?: Record<string, unknown> | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CalendarEventItem {
   id: number;
   type: string;
