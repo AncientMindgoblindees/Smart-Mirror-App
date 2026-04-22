@@ -644,6 +644,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const [mirrorSession, setMirrorSession] = useState<MirrorSessionResponse | null>(null);
   const [mirrorSessionLoading, setMirrorSessionLoading] = useState(true);
   const [mirrorSessionError, setMirrorSessionError] = useState<string | null>(null);
+  const [mirrorSessionStatusCode, setMirrorSessionStatusCode] = useState<number | null>(null);
   const [calendarEventsPreview, setCalendarEventsPreview] = useState<CalendarEventItem[]>([]);
   const [calendarTasksPreview, setCalendarTasksPreview] = useState<CalendarEventItem[]>([]);
   const [calendarPreviewProviders, setCalendarPreviewProviders] = useState<string[]>([]);
@@ -655,11 +656,34 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const [disconnectCandidate, setDisconnectCandidate] = useState<MirrorAuthProviderStatus | null>(null);
   const remoteRefreshInFlightRef = useRef(false);
   const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
+  const securityRefreshInFlightRef = useRef(false);
+  const calendarPreviewInFlightRef = useRef(false);
   const handledPairingQueryRef = useRef<string>('');
+  const sessionIdentityMatched = mirrorSession?.user?.uid === firebaseUser.uid;
+  const sessionProfileMatched = mirrorSession?.active_profile?.user_uid === firebaseUser.uid;
   const sessionBootstrapReady = Boolean(
-    mirrorSession?.user?.uid === firebaseUser.uid
-      && mirrorSession?.active_profile?.user_uid === firebaseUser.uid,
+    sessionIdentityMatched && (sessionProfileMatched || !mirrorSession?.active_profile),
   );
+  const hasMirrorBootstrapContext = Boolean(
+    mirrorHttpBase.trim() && mirrorHardwareId.trim() && (getMirrorHardwareToken() ?? '').trim(),
+  );
+  const hasFatalBootstrapStatus = mirrorSessionStatusCode != null && [400, 401, 403, 404].includes(mirrorSessionStatusCode);
+
+  const syncMirrorConnectionState = useCallback(() => {
+    const nextBase = getMirrorHttpBase();
+    const nextWs = getMirrorWsUrl();
+    const nextHardwareId = getMirrorHardwareId() ?? '';
+    const nextHardwareToken = getMirrorHardwareToken() ?? '';
+
+    setMirrorHttpBase(nextBase);
+    mirrorHttpRef.current = nextBase;
+    setMirrorHttpDraft(nextBase);
+    setWsUrl(nextWs);
+    setWsUrlDraft(nextWs);
+    setMirrorHardwareId(nextHardwareId);
+    setMirrorHardwareIdDraft(nextHardwareId);
+    setHardwareTokenDraft(nextHardwareToken);
+  }, []);
 
   const filteredTemplates = useMemo(() => {
     if (activeTemplateCategory === 'all') return CUSTOM_WIDGET_TEMPLATES;
@@ -759,9 +783,13 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 
   const loadMirrorSession = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
-    if (!base) {
+    const hardwareId = (getMirrorHardwareId() ?? '').trim();
+    const hardwareToken = (getMirrorHardwareToken() ?? '').trim();
+
+    if (!base || !hardwareId || !hardwareToken) {
       setMirrorSession(null);
-      setMirrorSessionError('Mirror HTTP base is required before private session checks can run.');
+      setMirrorSessionStatusCode(null);
+      setMirrorSessionError('Mirror HTTP base, hardware id, and hardware token are required before private session checks can run.');
       setMirrorSessionLoading(false);
       return;
     }
@@ -771,8 +799,10 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     try {
       const session = await mirrorGetSession(base);
       setMirrorSession(session);
+      setMirrorSessionStatusCode(200);
     } catch (error) {
       setMirrorSession(null);
+      setMirrorSessionStatusCode(error instanceof ApiError ? error.status : null);
       setMirrorSessionError(formatErrorMessage(error, 'Could not verify mirror role.'));
     } finally {
       setMirrorSessionLoading(false);
@@ -794,18 +824,26 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   }, []);
 
   const refreshMirrorSecurityState = useCallback(async () => {
-    await Promise.all([loadMirrorSession(), loadMirrorAuth()]);
+    if (securityRefreshInFlightRef.current) return;
+    securityRefreshInFlightRef.current = true;
+    try {
+      await Promise.all([loadMirrorSession(), loadMirrorAuth()]);
+    } finally {
+      securityRefreshInFlightRef.current = false;
+    }
   }, [loadMirrorAuth, loadMirrorSession]);
 
   const loadCalendarPreview = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
-    if (!base) {
+    if (!base || !hasMirrorBootstrapContext) {
       setCalendarEventsPreview([]);
       setCalendarTasksPreview([]);
       setCalendarPreviewProviders([]);
       setCalendarPreviewLastSync(null);
       return;
     }
+    if (calendarPreviewInFlightRef.current) return;
+    calendarPreviewInFlightRef.current = true;
     setCalendarPreviewLoading(true);
     try {
       const [eventsRes, tasksRes] = await Promise.all([
@@ -822,32 +860,50 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
       setCalendarPreviewProviders([]);
       setCalendarPreviewLastSync(null);
     } finally {
+      calendarPreviewInFlightRef.current = false;
       setCalendarPreviewLoading(false);
     }
-  }, []);
+  }, [hasMirrorBootstrapContext]);
 
   useEffect(() => {
+    if (!hasMirrorBootstrapContext) return;
     void refreshMirrorSecurityState();
-  }, [mirrorHardwareId, mirrorHttpBase, refreshMirrorSecurityState]);
+  }, [hasMirrorBootstrapContext, mirrorHardwareId, mirrorHttpBase, refreshMirrorSecurityState]);
 
   useEffect(() => {
-    if (sessionBootstrapReady) return;
-    const id = window.setInterval(() => {
+    if (!hasMirrorBootstrapContext || sessionBootstrapReady) return;
+    if (hasFatalBootstrapStatus && !activePairing) return;
+    const id = window.setTimeout(() => {
       void loadMirrorSession();
-    }, 3000);
-    return () => clearInterval(id);
-  }, [loadMirrorSession, sessionBootstrapReady]);
+    }, mirrorSession?.active_profile ? 6000 : 3500);
+    return () => clearTimeout(id);
+  }, [
+    activePairing,
+    hasFatalBootstrapStatus,
+    hasMirrorBootstrapContext,
+    loadMirrorSession,
+    mirrorSession?.active_profile,
+    sessionBootstrapReady,
+  ]);
 
   useEffect(() => {
-    if (activeTab !== 'accounts') return;
+    if (activeTab !== 'accounts' || !hasMirrorBootstrapContext) return;
+    if (hasFatalBootstrapStatus && !sessionBootstrapReady) return;
     void refreshMirrorSecurityState();
     void loadCalendarPreview();
     const id = window.setInterval(() => {
       void refreshMirrorSecurityState();
       void loadCalendarPreview();
-    }, 8000);
+    }, 15000);
     return () => clearInterval(id);
-  }, [activeTab, loadCalendarPreview, refreshMirrorSecurityState]);
+  }, [
+    activeTab,
+    hasFatalBootstrapStatus,
+    hasMirrorBootstrapContext,
+    loadCalendarPreview,
+    refreshMirrorSecurityState,
+    sessionBootstrapReady,
+  ]);
 
   const schedulePushLayoutToMirror = useCallback(
     (list: Widget[]) => {
@@ -1352,6 +1408,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
           replace_current_session: replaceCurrentSession,
         });
         applyMirrorBootstrapContext(exchange.mirror_context);
+        syncMirrorConnectionState();
 
         if (exchange.user.uid !== firebaseUser.uid && !replaceCurrentSession) {
           setPendingReplacement(exchange);
@@ -1379,7 +1436,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
         setPairingBusy(false);
       }
     },
-    [firebaseUser.uid, loadCalendarPreview, refreshMirrorSecurityState],
+    [firebaseUser.uid, loadCalendarPreview, refreshMirrorSecurityState, syncMirrorConnectionState],
   );
 
   const startProviderPairing = useCallback(
@@ -1493,6 +1550,8 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     try {
       if ('custom_token' in pending) {
         clearPairingQueryFromWindow();
+        applyMirrorBootstrapContext(pending.mirror_context);
+        syncMirrorConnectionState();
         await signInWithFirebaseCustomToken(pending.custom_token);
         clearPendingPairingHandoff();
         toast.success(`Signed in as ${pending.user.email ?? 'new user'} through secure pairing.`);
@@ -1503,7 +1562,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     } catch (error) {
       toast.error(formatErrorMessage(error, 'Could not replace the current session.'));
     }
-  }, [completePairingFlow, pendingReplacement]);
+  }, [completePairingFlow, pendingReplacement, syncMirrorConnectionState]);
 
   return (
     <div className="min-h-screen bg-black text-white p-6 font-[var(--font-sans)] selection:bg-white/20 relative overflow-hidden">
@@ -2834,10 +2893,12 @@ export default function App() {
         await signInWithFirebaseCustomToken(exchange.custom_token);
         clearPairingQueryFromWindow();
         clearPendingPairingHandoff();
+        signedOutPairingMarkerRef.current = '';
       } catch (error) {
         if (isFatalPairingError(error)) {
           clearPairingQueryFromWindow();
           clearPendingPairingHandoff();
+          signedOutPairingMarkerRef.current = '';
         }
         setNotice({
           tone: 'danger',
@@ -2924,6 +2985,7 @@ export default function App() {
       await signOutFromFirebase();
       clearPairingQueryFromWindow();
       clearPendingPairingHandoff();
+      signedOutPairingMarkerRef.current = '';
       setPairingCode('');
       setPendingPairing(null);
       setNotice({
