@@ -10,6 +10,19 @@ export class ApiError extends Error {
   }
 }
 
+function identityHeaders(): HeadersInit {
+  try {
+    const hardwareId = localStorage.getItem('mirror_hardware_id')?.trim();
+    const userId = localStorage.getItem('mirror_user_id')?.trim();
+    const headers: Record<string, string> = {};
+    if (hardwareId) headers['X-Mirror-Hardware-Id'] = hardwareId;
+    if (userId) headers['X-Mirror-User-Id'] = userId;
+    return headers;
+  } catch {
+    return {};
+  }
+}
+
 export function trimBase(base: string): string {
   return base.replace(/\/$/, '');
 }
@@ -19,7 +32,13 @@ export async function requestJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const res = await fetch(`${trimBase(baseUrl)}${path}`, init);
+  const res = await fetch(`${trimBase(baseUrl)}${path}`, {
+    ...init,
+    headers: {
+      ...identityHeaders(),
+      ...(init.headers ?? {}),
+    },
+  });
   if (!res.ok) {
     let details = '';
     try {
@@ -41,7 +60,13 @@ export async function requestVoid(
   path: string,
   init: RequestInit = {},
 ): Promise<void> {
-  const res = await fetch(`${trimBase(baseUrl)}${path}`, init);
+  const res = await fetch(`${trimBase(baseUrl)}${path}`, {
+    ...init,
+    headers: {
+      ...identityHeaders(),
+      ...(init.headers ?? {}),
+    },
+  });
   if (!res.ok) {
     let details = '';
     try {

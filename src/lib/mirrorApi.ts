@@ -1,11 +1,13 @@
 import type {
   CalendarEventsResponse,
   CalendarTasksResponse,
+  MirrorProfile,
   WidgetConfigOut,
   WidgetConfigUpdate,
 } from '../types/mirror';
 import { ApiError, requestJson, requestVoid, trimBase } from '../api/httpClient';
 import { routes } from '../api/routes';
+import { getMirrorIdentityContext } from './connectionConfig';
 
 export type MirrorAuthProviderStatus = {
   provider: string;
@@ -15,25 +17,60 @@ export type MirrorAuthProviderStatus = {
   connected_at?: string | null;
 };
 
+function requiredIdentity() {
+  const identity = getMirrorIdentityContext();
+  if (!identity) {
+    throw new Error('Mirror identity is not configured. Set hardware id and user id in Settings.');
+  }
+  return identity;
+}
+
+function withMirrorQuery(path: string): string {
+  const identity = requiredIdentity();
+  const sep = path.includes('?') ? '&' : '?';
+  const params = new URLSearchParams({
+    hardware_id: identity.hardwareId,
+  });
+  return `${path}${sep}${params.toString()}`;
+}
+
+function withIdentityQuery(path: string): string {
+  const identity = requiredIdentity();
+  const sep = path.includes('?') ? '&' : '?';
+  const params = new URLSearchParams({
+    hardware_id: identity.hardwareId,
+    user_id: identity.userId,
+  });
+  return `${path}${sep}${params.toString()}`;
+}
+
 export async function mirrorAuthProviders(baseUrl: string): Promise<MirrorAuthProviderStatus[]> {
-  return requestJson<MirrorAuthProviderStatus[]>(baseUrl, routes.authProviders);
+  return requestJson<MirrorAuthProviderStatus[]>(baseUrl, withIdentityQuery(routes.authProviders));
+}
+
+export async function mirrorListProfiles(baseUrl: string): Promise<MirrorProfile[]> {
+  return requestJson<MirrorProfile[]>(baseUrl, withMirrorQuery(routes.profileList));
+}
+
+export async function mirrorDeleteProfile(baseUrl: string, userId: string): Promise<void> {
+  await requestVoid(baseUrl, withMirrorQuery(routes.profileDelete(userId)), { method: 'DELETE' });
 }
 
 /** Device-code flow: mirror shows QR; user completes on phone. */
 export async function mirrorAuthStartDeviceLogin(
   baseUrl: string,
-  provider: 'google' | 'microsoft'
+  provider: 'google'
 ): Promise<void> {
-  await requestVoid(baseUrl, routes.authLogin(provider), { method: 'POST' });
+  await requestVoid(baseUrl, withIdentityQuery(routes.authLogin(provider)), { method: 'POST' });
 }
 
 export async function mirrorAuthLogout(baseUrl: string, provider: string): Promise<void> {
-  await requestVoid(baseUrl, routes.authLogout(provider), { method: 'DELETE' });
+  await requestVoid(baseUrl, withIdentityQuery(routes.authLogout(provider)), { method: 'DELETE' });
 }
 
-/** Full-page redirect URL for browser OAuth (sign in on this device). */
-export function mirrorOAuthWebStartUrl(baseUrl: string, provider: 'google' | 'microsoft'): string {
-  return `${trimBase(baseUrl)}${routes.oauthStart(provider)}`;
+/** Full-page redirect URL for browser Google OAuth on the mirror backend. */
+export function mirrorOAuthWebStartUrl(baseUrl: string, provider: 'google'): string {
+  return `${trimBase(baseUrl)}${withIdentityQuery(routes.oauthStart(provider))}&source=browser`;
 }
 
 export async function mirrorGetWidgets(baseUrl: string): Promise<WidgetConfigOut[]> {
