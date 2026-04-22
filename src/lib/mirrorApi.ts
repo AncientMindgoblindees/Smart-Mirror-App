@@ -1,30 +1,102 @@
 import type {
   CalendarEventsResponse,
   CalendarTasksResponse,
+  MirrorAuthPairingFinalizeRequest,
+  MirrorAuthPairingRedeemRequest,
+  MirrorAuthPairingRedeemResponse,
+  MirrorAuthPairingSession,
+  MirrorAuthPairingStartRequest,
+  MirrorAuthPairingStatusResponse,
+  MirrorAuthPairingTokenExchangeRequest,
+  MirrorAuthPairingTokenExchangeResponse,
+  MirrorAuthProviderStatus,
+  MirrorOAuthProvider,
+  MirrorSessionResponse,
   WidgetConfigOut,
   WidgetConfigUpdate,
 } from '../types/mirror';
 import { ApiError, requestJson, requestVoid, trimBase } from '../api/httpClient';
 import { routes } from '../api/routes';
 
-export type MirrorAuthProviderStatus = {
-  provider: string;
-  connected: boolean;
-  status: string;
-  scopes?: string | null;
-  connected_at?: string | null;
-};
+export type { MirrorAuthProviderStatus } from '../types/mirror';
+
+export async function mirrorGetSession(baseUrl: string): Promise<MirrorSessionResponse> {
+  return requestJson<MirrorSessionResponse>(baseUrl, routes.sessionMe);
+}
 
 export async function mirrorAuthProviders(baseUrl: string): Promise<MirrorAuthProviderStatus[]> {
   return requestJson<MirrorAuthProviderStatus[]>(baseUrl, routes.authProviders);
 }
 
-/** Device-code flow: mirror shows QR; user completes on phone. */
+export async function mirrorStartAuthPairing(
+  baseUrl: string,
+  payload: MirrorAuthPairingStartRequest,
+): Promise<MirrorAuthPairingSession> {
+  return requestJson<MirrorAuthPairingSession>(baseUrl, routes.authPairings, {
+    method: 'POST',
+    authMode: 'optional',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function mirrorRedeemAuthPairing(
+  baseUrl: string,
+  payload: MirrorAuthPairingRedeemRequest,
+): Promise<MirrorAuthPairingRedeemResponse> {
+  return requestJson<MirrorAuthPairingRedeemResponse>(baseUrl, routes.authPairingRedeem, {
+    method: 'POST',
+    authMode: 'optional',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function mirrorGetAuthPairing(
+  baseUrl: string,
+  pairingId: string,
+): Promise<MirrorAuthPairingStatusResponse> {
+  return requestJson<MirrorAuthPairingStatusResponse>(baseUrl, routes.authPairingById(pairingId), {
+    authMode: 'optional',
+  });
+}
+
+export async function mirrorFinalizeAuthPairing(
+  baseUrl: string,
+  pairingId: string,
+  payload: MirrorAuthPairingFinalizeRequest = {},
+): Promise<MirrorAuthPairingStatusResponse> {
+  return requestJson<MirrorAuthPairingStatusResponse>(baseUrl, routes.authPairingFinalize(pairingId), {
+    method: 'POST',
+    authMode: 'optional',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function mirrorExchangeAuthPairingToken(
+  baseUrl: string,
+  pairingId: string,
+  payload: MirrorAuthPairingTokenExchangeRequest = {},
+): Promise<MirrorAuthPairingTokenExchangeResponse> {
+  return requestJson<MirrorAuthPairingTokenExchangeResponse>(
+    baseUrl,
+    routes.authPairingExchangeToken(pairingId),
+    {
+      method: 'POST',
+      authMode: 'optional',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+/** Legacy device-code entrypoint kept for compatibility while newer UIs migrate to pairing sessions. */
 export async function mirrorAuthStartDeviceLogin(
   baseUrl: string,
-  provider: 'google' | 'microsoft'
+  provider: MirrorOAuthProvider,
 ): Promise<void> {
-  await requestVoid(baseUrl, routes.authLogin(provider), { method: 'POST' });
+  await mirrorStartAuthPairing(baseUrl, { provider, intent: 'link_provider' });
 }
 
 export async function mirrorAuthLogout(baseUrl: string, provider: string): Promise<void> {
@@ -32,8 +104,18 @@ export async function mirrorAuthLogout(baseUrl: string, provider: string): Promi
 }
 
 /** Full-page redirect URL for browser OAuth (sign in on this device). */
-export function mirrorOAuthWebStartUrl(baseUrl: string, provider: 'google' | 'microsoft'): string {
-  return `${trimBase(baseUrl)}${routes.oauthStart(provider)}`;
+export function mirrorOAuthWebStartUrl(
+  baseUrl: string,
+  provider: MirrorOAuthProvider,
+  options?: {
+    pairingId?: string | null;
+    redirectTo?: string | null;
+  },
+): string {
+  const url = new URL(`${trimBase(baseUrl)}${routes.oauthStart(provider)}`);
+  if (options?.pairingId) url.searchParams.set('pairing_id', options.pairingId);
+  if (options?.redirectTo) url.searchParams.set('redirect_to', options.redirectTo);
+  return url.toString();
 }
 
 export async function mirrorGetWidgets(baseUrl: string): Promise<WidgetConfigOut[]> {

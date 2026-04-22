@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import type { User } from 'firebase/auth';
 import { 
   Clock, 
   Cloud, 
@@ -11,6 +12,7 @@ import {
   X,
   Check,
   Loader2,
+  LogOut,
   Settings,
   Sparkles,
   Wifi,
@@ -20,6 +22,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { cn } from './lib/utils';
+import { ApiError } from './api/httpClient';
 import type { Widget } from './lib/mirrorLayout';
 import {
   widgetsFromApi,
@@ -31,27 +34,54 @@ import {
   normalizeWidgetTypeId,
   dedupeWidgetApiRows,
 } from './lib/mirrorLayout';
-import { loadLayoutCache, saveLayoutCache } from './lib/layoutLocalCache';
+import { clearLayoutCache, loadLayoutCache, saveLayoutCache } from './lib/layoutLocalCache';
 import {
-  mirrorGetWidgets,
-  mirrorPutWidgets,
+  mirrorExchangeAuthPairingToken,
+  mirrorFinalizeAuthPairing,
+  mirrorGetAuthPairing,
+  mirrorGetSession,
   mirrorAuthProviders,
-  mirrorAuthStartDeviceLogin,
   mirrorAuthLogout,
   mirrorOAuthWebStartUrl,
+  mirrorRedeemAuthPairing,
+  mirrorStartAuthPairing,
+  mirrorGetWidgets,
+  mirrorPutWidgets,
   mirrorGetCalendarEvents,
   mirrorGetCalendarTasks,
   type MirrorAuthProviderStatus,
 } from './lib/mirrorApi';
+import {
+  ensureFirebaseAuthReady,
+  signInWithFirebaseCustomToken,
+  signInWithGoogle,
+  signOutFromFirebase,
+  subscribeToFirebaseAuth,
+} from './firebase';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
+import { PrivateLoginGate, type PrivateLoginGateNotice, type PrivateLoginGatePendingPairing } from './components/PrivateLoginGate';
+import { PublicMirrorSettingsModal, type PublicMirrorSettingsDraft, type PublicMirrorSettingsStatus } from './components/PublicMirrorSettingsModal';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
-import type { CalendarEventItem, WidgetConfigOut } from './types/mirror';
+import type {
+  CalendarEventItem,
+  MirrorAuthPairingStatusResponse,
+  MirrorAuthPairingTokenExchangeResponse,
+  MirrorSessionResponse,
+  MirrorOAuthProvider,
+  WidgetConfigOut,
+} from './types/mirror';
 import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
 import {
+  buildScopedWsUrl,
+  clearMirrorLegacyUserId,
+  getMirrorHardwareId,
+  getMirrorHardwareToken,
   getMirrorHttpBase,
   getMirrorWsUrl,
   setMirrorHttpBase as persistMirrorHttpBase,
+  setMirrorHardwareId as persistMirrorHardwareId,
+  setMirrorHardwareToken as persistMirrorHardwareToken,
   setMirrorWsUrl as persistMirrorWsUrl,
 } from './lib/connectionConfig';
 import { FluidDropdown } from './components/ui/fluid-dropdown';
@@ -128,6 +158,109 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
   { id: '12h', label: '12-hour' },
   { id: '24h', label: '24-hour' },
 ] as const;
+
+type PairingQueryState = {
+  pairingId: string;
+  pairingCode: string;
+};
+
+function readDeviceSettingsDraft(): PublicMirrorSettingsDraft {
+  return {
+    mirrorHttpBase: getMirrorHttpBase(),
+    wsUrl: getMirrorWsUrl(),
+    hardwareId: getMirrorHardwareId() ?? '',
+    hardwareToken: getMirrorHardwareToken() ?? '',
+  };
+}
+
+function persistDeviceSettingsDraft(draft: PublicMirrorSettingsDraft): PublicMirrorSettingsDraft {
+  const next: PublicMirrorSettingsDraft = {
+    mirrorHttpBase: draft.mirrorHttpBase.trim(),
+    wsUrl: draft.wsUrl.trim(),
+    hardwareId: draft.hardwareId.trim(),
+    hardwareToken: draft.hardwareToken.trim(),
+  };
+
+  persistMirrorHttpBase(next.mirrorHttpBase);
+  if (next.wsUrl) persistMirrorWsUrl(next.wsUrl);
+  persistMirrorHardwareId(next.hardwareId);
+  persistMirrorHardwareToken(next.hardwareToken);
+  clearMirrorLegacyUserId();
+
+  return next;
+}
+
+function readPairingQueryFromWindow(): PairingQueryState {
+  if (typeof window === 'undefined') return { pairingId: '', pairingCode: '' };
+  const search = new URLSearchParams(window.location.search);
+  return {
+    pairingId: search.get('pairing_id')?.trim() ?? '',
+    pairingCode: search.get('pairing_code')?.trim().toUpperCase() ?? '',
+  };
+}
+
+function clearPairingQueryFromWindow(): void {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete('pairing_id');
+  url.searchParams.delete('pairing_code');
+  window.history.replaceState({}, document.title, url.toString());
+}
+
+function formatErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) return error.details || error.message;
+  if (error instanceof Error) return error.message;
+  return fallback;
+}
+
+function formatRelativeExpiry(raw: string | null | undefined): string | undefined {
+  if (!raw) return undefined;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleString();
+}
+
+function buildPendingPairingView(
+  pairing: {
+    provider?: string | null;
+    pairing_code?: string | null;
+    status?: string | null;
+    expires_at?: string | null;
+  } | null,
+): PrivateLoginGatePendingPairing | null {
+  if (!pairing) return null;
+  return {
+    providerLabel: pairing.provider ? `${pairing.provider[0].toUpperCase()}${pairing.provider.slice(1)} account` : 'Account linking',
+    code: pairing.pairing_code ?? undefined,
+    expiresAtLabel: formatRelativeExpiry(pairing.expires_at),
+    statusLabel: pairing.status ?? undefined,
+    instructions: [
+      'Start the provider sign-in on the mirror or from the redirect page.',
+      'Return here if prompted for a pairing code or deep link redemption.',
+      'Wait for the app to confirm the account has been securely attached to Firebase.',
+    ],
+  };
+}
+
+async function waitForPairingReady(
+  baseUrl: string,
+  pairingId: string,
+  onProgress: (status: MirrorAuthPairingStatusResponse) => void,
+): Promise<MirrorAuthPairingStatusResponse> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const status = await mirrorGetAuthPairing(baseUrl, pairingId);
+    onProgress(status);
+    if (status.custom_token_ready || status.status === 'complete' || status.status === 'authorized') {
+      return status;
+    }
+    if (status.status === 'expired' || status.status === 'error') {
+      return status;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+  }
+
+  return mirrorGetAuthPairing(baseUrl, pairingId);
+}
 
 function cloneWidgetForSettingsDraft(w: Widget): Widget {
   return {
@@ -351,14 +484,19 @@ const MirrorWidget = ({
   );
 };
 
-export default function App() {
+type AuthenticatedAppProps = {
+  firebaseUser: User;
+  onSignOut: () => Promise<void>;
+};
+
+function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const sessionIdRef = useRef(createSessionId());
   const [activeTab, setActiveTab] = useState<
     'layout' | 'camera' | 'wardrobe' | 'outfit' | 'connection' | 'accounts'
   >('layout');
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
-    return loadLayoutCache() ?? hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
+    return loadLayoutCache(firebaseUser.uid) ?? hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
   });
   const [httpSyncState, setHttpSyncState] = useState<HttpSyncState>('idle');
   const [customTemplateId, setCustomTemplateId] = useState(CUSTOM_WIDGET_TEMPLATES[0]?.id ?? 'sticky-note');
@@ -414,14 +552,25 @@ export default function App() {
   mirrorHttpRef.current = mirrorHttpBase;
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
+  const [mirrorHardwareId, setMirrorHardwareId] = useState(() => getMirrorHardwareId() ?? '');
+  const [hardwareIdDraft, setHardwareIdDraft] = useState(() => getMirrorHardwareId() ?? '');
+  const [hardwareTokenDraft, setHardwareTokenDraft] = useState(() => getMirrorHardwareToken() ?? '');
   const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
+  const [mirrorSession, setMirrorSession] = useState<MirrorSessionResponse | null>(null);
+  const [mirrorSessionLoading, setMirrorSessionLoading] = useState(true);
+  const [mirrorSessionError, setMirrorSessionError] = useState<string | null>(null);
   const [calendarEventsPreview, setCalendarEventsPreview] = useState<CalendarEventItem[]>([]);
   const [calendarTasksPreview, setCalendarTasksPreview] = useState<CalendarEventItem[]>([]);
   const [calendarPreviewProviders, setCalendarPreviewProviders] = useState<string[]>([]);
   const [calendarPreviewLastSync, setCalendarPreviewLastSync] = useState<string | null>(null);
   const [calendarPreviewLoading, setCalendarPreviewLoading] = useState(false);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [activePairing, setActivePairing] = useState<MirrorAuthPairingStatusResponse | null>(null);
+  const [pendingReplacement, setPendingReplacement] = useState<MirrorAuthPairingTokenExchangeResponse | MirrorAuthPairingStatusResponse | null>(null);
+  const [disconnectCandidate, setDisconnectCandidate] = useState<MirrorAuthProviderStatus | null>(null);
   const remoteRefreshInFlightRef = useRef(false);
   const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
+  const handledPairingQueryRef = useRef<string>('');
 
   const filteredTemplates = useMemo(() => {
     if (activeTemplateCategory === 'all') return CUSTOM_WIDGET_TEMPLATES;
@@ -433,6 +582,10 @@ export default function App() {
   );
 
   useEffect(() => {
+    clearMirrorLegacyUserId();
+  }, []);
+
+  useEffect(() => {
     if (!filteredTemplates.some((t) => t.id === customTemplateId)) {
       setCustomTemplateId(filteredTemplates[0]?.id ?? CUSTOM_WIDGET_TEMPLATES[0]?.id ?? 'sticky-note');
     }
@@ -442,7 +595,11 @@ export default function App() {
     if (!showSettings) return;
     setMirrorHttpDraft(mirrorHttpBase);
     setWsUrlDraft(wsUrl);
+    setHardwareIdDraft(getMirrorHardwareId() ?? '');
+    setHardwareTokenDraft(getMirrorHardwareToken() ?? '');
   }, [showSettings, mirrorHttpBase, wsUrl]);
+
+  const scopedWsUrl = useMemo(() => buildScopedWsUrl(wsUrl), [wsUrl, mirrorHardwareId]);
 
   const loadLayoutFromMirror = useCallback(async (opts?: { silent?: boolean }) => {
     const configuredBase = mirrorHttpBase.trim();
@@ -472,7 +629,7 @@ export default function App() {
       );
       const next = widgetsFromApi(rows);
       setWidgets(next);
-      saveLayoutCache(next);
+      saveLayoutCache(next, firebaseUser.uid);
       if (resolvedBase !== configuredBase) {
         setMirrorHttpBase(resolvedBase);
         mirrorHttpRef.current = resolvedBase;
@@ -483,7 +640,7 @@ export default function App() {
       window.setTimeout(() => setHttpSyncState('idle'), 2000);
     } catch (e) {
       console.warn('Mirror GET /api/widgets failed', e);
-      const cached = loadLayoutCache();
+      const cached = loadLayoutCache(firebaseUser.uid);
       if (cached) {
         setWidgets(cached);
         if (!opts?.silent) toast.message('Mirror unreachable — showing saved layout from this browser');
@@ -507,6 +664,28 @@ export default function App() {
     };
   }, []);
 
+  const loadMirrorSession = useCallback(async () => {
+    const base = mirrorHttpRef.current.trim();
+    if (!base) {
+      setMirrorSession(null);
+      setMirrorSessionError('Mirror HTTP base is required before private session checks can run.');
+      setMirrorSessionLoading(false);
+      return;
+    }
+
+    setMirrorSessionLoading(true);
+    setMirrorSessionError(null);
+    try {
+      const session = await mirrorGetSession(base);
+      setMirrorSession(session);
+    } catch (error) {
+      setMirrorSession(null);
+      setMirrorSessionError(formatErrorMessage(error, 'Could not verify mirror role.'));
+    } finally {
+      setMirrorSessionLoading(false);
+    }
+  }, []);
+
   const loadMirrorAuth = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
     if (!base) return;
@@ -517,6 +696,10 @@ export default function App() {
       setMirrorAuthList([]);
     }
   }, []);
+
+  const refreshMirrorSecurityState = useCallback(async () => {
+    await Promise.all([loadMirrorSession(), loadMirrorAuth()]);
+  }, [loadMirrorAuth, loadMirrorSession]);
 
   const loadCalendarPreview = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
@@ -542,15 +725,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    void loadMirrorSession();
+  }, [loadMirrorSession]);
+
+  useEffect(() => {
     if (activeTab !== 'accounts') return;
-    void loadMirrorAuth();
+    void refreshMirrorSecurityState();
     void loadCalendarPreview();
     const id = window.setInterval(() => {
-      void loadMirrorAuth();
+      void refreshMirrorSecurityState();
       void loadCalendarPreview();
     }, 8000);
     return () => clearInterval(id);
-  }, [activeTab, loadMirrorAuth, loadCalendarPreview]);
+  }, [activeTab, loadCalendarPreview, refreshMirrorSecurityState]);
 
   const schedulePushLayoutToMirror = useCallback(
     (list: Widget[]) => {
@@ -565,7 +752,7 @@ export default function App() {
           backendByWidgetIdRef.current = new Map(
             dedupeWidgetApiRows(out).map((r) => [normalizeWidgetTypeId(r.widget_id), r])
           );
-          saveLayoutCache(list);
+          saveLayoutCache(list, firebaseUser.uid);
           setHttpSyncState('saved');
           window.setTimeout(() => setHttpSyncState('idle'), 2000);
         } catch {
@@ -579,9 +766,9 @@ export default function App() {
   );
 
   useEffect(() => {
-    const t = window.setTimeout(() => saveLayoutCache(widgets), 400);
+    const t = window.setTimeout(() => saveLayoutCache(widgets, firebaseUser.uid), 400);
     return () => window.clearTimeout(t);
-  }, [widgets]);
+  }, [firebaseUser.uid, widgets]);
 
   // --- WebSocket via MirrorConnectionManager ---
   const messageHandlerRef = useRef<(data: Record<string, unknown>) => void>(() => {});
@@ -638,12 +825,12 @@ export default function App() {
         onStatusChange: (s) => setWsConnected(s === 'CONNECTED'),
         onMessage: (d) => messageHandlerRef.current(d),
       },
-      wsUrl,
+      scopedWsUrl,
     );
     connectionManagerRef.current = mgr;
     mgr.connect();
     return () => { mgr.dispose(); connectionManagerRef.current = null; };
-  }, [wsUrl]);
+  }, [scopedWsUrl]);
 
   const sendEnvelopeToMirror = (envelope: Record<string, unknown>) => {
     if (!connectionManagerRef.current?.send(envelope)) {
@@ -982,6 +1169,211 @@ export default function App() {
     }
   };
 
+  const isAdmin = mirrorSession?.role === 'admin';
+  const currentUserProviders = useMemo(
+    () =>
+      mirrorAuthList.filter((row) =>
+        row.owner_user_uid
+          ? row.owner_user_uid === firebaseUser.uid
+          : row.is_current_user_owner !== false
+      ),
+    [firebaseUser.uid, mirrorAuthList],
+  );
+  const managedProviders = useMemo(
+    () =>
+      mirrorAuthList.filter((row) =>
+        row.owner_user_uid ? row.owner_user_uid !== firebaseUser.uid : row.is_current_user_owner === false
+      ),
+    [firebaseUser.uid, mirrorAuthList],
+  );
+
+  const completePairingFlow = useCallback(
+    async (pairingId: string, replaceCurrentSession = false) => {
+      const base = mirrorHttpRef.current.trim();
+      if (!base) {
+        toast.error('Set Mirror HTTP base before finishing account linking.');
+        return;
+      }
+
+      setPairingBusy(true);
+      try {
+        const finalized = await mirrorFinalizeAuthPairing(base, pairingId, {
+          replace_current_session: replaceCurrentSession,
+        });
+        setActivePairing(finalized);
+        if (finalized.requires_session_replacement && !replaceCurrentSession) {
+          setPendingReplacement(finalized);
+          return;
+        }
+
+        const ready = finalized.custom_token_ready
+          ? finalized
+          : await waitForPairingReady(base, pairingId, setActivePairing);
+        setActivePairing(ready);
+
+        if (ready.status === 'expired') {
+          throw new Error('This pairing session expired. Start a new mirror sign-in and try again.');
+        }
+        if (ready.status === 'error') {
+          throw new Error(ready.error_message ?? 'Mirror pairing failed.');
+        }
+
+        if (!ready.custom_token_ready) {
+          toast.success('Account linked securely.');
+          clearPairingQueryFromWindow();
+          await refreshMirrorSecurityState();
+          await loadCalendarPreview();
+          setActivePairing(null);
+          return;
+        }
+
+        const exchange = await mirrorExchangeAuthPairingToken(base, pairingId, {
+          replace_current_session: replaceCurrentSession,
+        });
+
+        if (exchange.user.uid !== firebaseUser.uid && !replaceCurrentSession) {
+          setPendingReplacement(exchange);
+          return;
+        }
+
+        clearPairingQueryFromWindow();
+
+        if (exchange.user.uid !== firebaseUser.uid) {
+          await signInWithFirebaseCustomToken(exchange.custom_token);
+          toast.success(`Signed in as ${exchange.user.email ?? 'new user'} through secure pairing.`);
+          return;
+        }
+
+        toast.success('Account linked securely.');
+        setPendingReplacement(null);
+        setActivePairing(null);
+        await refreshMirrorSecurityState();
+        await loadCalendarPreview();
+      } catch (error) {
+        toast.error(formatErrorMessage(error, 'Could not finish account linking.'));
+      } finally {
+        setPairingBusy(false);
+      }
+    },
+    [firebaseUser.uid, loadCalendarPreview, refreshMirrorSecurityState],
+  );
+
+  const startProviderPairing = useCallback(
+    async (provider: MirrorOAuthProvider, surface: 'mirror' | 'browser') => {
+      const base = mirrorHttpRef.current.trim();
+      if (!base) {
+        toast.error('Set Mirror HTTP base before linking an account.');
+        return;
+      }
+
+      setPairingBusy(true);
+      try {
+        const redirectTo =
+          typeof window === 'undefined' ? null : `${window.location.origin}${window.location.pathname}`;
+        const pairing = await mirrorStartAuthPairing(base, {
+          provider,
+          intent: 'link_provider',
+          redirect_to: redirectTo,
+        });
+        setActivePairing(pairing as MirrorAuthPairingStatusResponse);
+
+        if (surface === 'browser') {
+          const nextUrl =
+            pairing.oauth_url ??
+            pairing.deep_link_url ??
+            mirrorOAuthWebStartUrl(base, provider, {
+              pairingId: pairing.pairing_id,
+              redirectTo,
+            });
+          window.location.href = nextUrl;
+          return;
+        }
+
+        toast.success(
+          pairing.pairing_code
+            ? `Mirror pairing started. Redeem code ${pairing.pairing_code} if prompted here.`
+            : 'Mirror pairing started. Finish sign-in on the mirror screen.',
+        );
+      } catch (error) {
+        toast.error(formatErrorMessage(error, 'Could not start provider linking.'));
+      } finally {
+        setPairingBusy(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const query = readPairingQueryFromWindow();
+    const marker = `${query.pairingId}:${query.pairingCode}`;
+    if (!query.pairingId && !query.pairingCode) return;
+    if (handledPairingQueryRef.current === marker) return;
+    handledPairingQueryRef.current = marker;
+
+    void (async () => {
+      const base = mirrorHttpRef.current.trim();
+      if (!base) {
+        toast.error('Set Mirror HTTP base before redeeming a pairing redirect.');
+        return;
+      }
+
+      try {
+        setPairingBusy(true);
+        let pairingId = query.pairingId;
+        if (query.pairingCode) {
+          const redeemed = await mirrorRedeemAuthPairing(base, { pairing_code: query.pairingCode });
+          pairingId = redeemed.pairing_id;
+          setActivePairing({
+            ...(redeemed as MirrorAuthPairingStatusResponse),
+            pairing_code: query.pairingCode,
+          });
+        }
+        if (!pairingId) {
+          setPairingBusy(false);
+          return;
+        }
+        await completePairingFlow(pairingId);
+      } catch (error) {
+        setPairingBusy(false);
+        toast.error(formatErrorMessage(error, 'Could not redeem the pairing redirect.'));
+      }
+    })();
+  }, [completePairingFlow]);
+
+  const confirmDisconnect = useCallback(async () => {
+    const target = disconnectCandidate;
+    if (!target) return;
+    try {
+      await mirrorAuthLogout(mirrorHttpBase, String(target.provider));
+      toast.success(
+        target.owner_email && target.owner_email !== firebaseUser.email
+          ? `Disconnected ${target.provider} for ${target.owner_email}.`
+          : 'Disconnected provider.',
+      );
+      setDisconnectCandidate(null);
+      await refreshMirrorSecurityState();
+    } catch (error) {
+      toast.error(formatErrorMessage(error, 'Disconnect failed.'));
+    }
+  }, [disconnectCandidate, firebaseUser.email, mirrorHttpBase, refreshMirrorSecurityState]);
+
+  const confirmSessionReplacement = useCallback(async () => {
+    const pending = pendingReplacement;
+    if (!pending) return;
+    try {
+      if ('custom_token' in pending) {
+        clearPairingQueryFromWindow();
+        await signInWithFirebaseCustomToken(pending.custom_token);
+        toast.success(`Signed in as ${pending.user.email ?? 'new user'} through secure pairing.`);
+      } else {
+        await completePairingFlow(pending.pairing_id, true);
+      }
+      setPendingReplacement(null);
+    } catch (error) {
+      toast.error(formatErrorMessage(error, 'Could not replace the current session.'));
+    }
+  }, [completePairingFlow, pendingReplacement]);
+
   return (
     <div className="min-h-screen bg-black text-white p-6 font-[var(--font-sans)] selection:bg-white/20 relative overflow-hidden">
       <div className="fixed inset-0 pointer-events-none z-0">
@@ -1008,12 +1400,28 @@ export default function App() {
             </div>
           </div>
         </div>
-        <button 
-          onClick={() => setShowSettings(true)}
-          className="p-2.5 text-white/30 hover:text-white/80 transition-colors rounded-xl hover:bg-white/[0.04]"
-        >
-          <Settings size={20} />
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="hidden sm:flex flex-col items-end px-3 py-2 rounded-2xl border border-white/10 bg-white/[0.04]">
+            <span className="text-[10px] uppercase tracking-[0.18em] text-white/35">Signed in</span>
+            <span className="text-sm text-white/80">{firebaseUser.email ?? 'Private session'}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowSettings(true)}
+            className="p-2.5 text-white/30 hover:text-white/80 transition-colors rounded-xl hover:bg-white/[0.04]"
+          >
+            <Settings size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void onSignOut()}
+            className="p-2.5 text-white/30 hover:text-white/80 transition-colors rounded-xl hover:bg-white/[0.04]"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut size={20} />
+          </button>
+        </div>
       </header>
 
       <nav className="max-w-7xl mx-auto mb-6">
@@ -1100,14 +1508,51 @@ export default function App() {
                     e.g. ws://192.168.1.100:8002/ws/control — optional if HTTP base is set (layout via REST).
                   </p>
                 </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">
+                    Mirror Hardware ID
+                  </label>
+                  <input
+                    type="text"
+                    value={hardwareIdDraft}
+                    onChange={(e) => setHardwareIdDraft(e.target.value)}
+                    placeholder="smart-mirror-pi"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">
+                    Mirror Hardware Token
+                  </label>
+                  <input
+                    type="text"
+                    value={hardwareTokenDraft}
+                    onChange={(e) => setHardwareTokenDraft(e.target.value)}
+                    placeholder="token from /api/mirror/register"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">
+                    Device access
+                  </label>
+                  <p className="text-[11px] text-white/30 leading-relaxed">
+                    User identity now comes from your Firebase sign-in. This settings screen only stores mirror device connection details.
+                  </p>
+                </div>
                 
                 <button 
                   type="button"
                   onClick={() => {
                     const v = mirrorHttpDraft.trim();
                     const nextWs = wsUrlDraft.trim();
+                    const nextHardwareId = hardwareIdDraft.trim();
+                    const nextHardwareToken = hardwareTokenDraft.trim();
                     persistMirrorHttpBase(v);
                     if (nextWs) persistMirrorWsUrl(nextWs);
+                    persistMirrorHardwareId(nextHardwareId);
+                    persistMirrorHardwareToken(nextHardwareToken);
+                    setMirrorHardwareId(nextHardwareId);
                     setMirrorHttpBase(v);
                     if (nextWs) setWsUrl(nextWs);
                     setShowSettings(false);
@@ -1416,67 +1861,76 @@ export default function App() {
               Calendar accounts
             </h2>
             <p className="text-sm text-white/45">
-              Use the same HTTP base as in Settings. The mirror stores tokens; widgets read calendar and tasks from the mirror API.
+              Firebase decides who you are. The mirror only exposes household account actions that match your verified role.
             </p>
+
+            <GlassCard className="space-y-3">
+              <h3 className="text-sm font-medium text-white/90">Private session</h3>
+              {mirrorSessionLoading ? (
+                <p className="text-xs text-white/35">Checking your mirror role...</p>
+              ) : mirrorSessionError ? (
+                <p className="text-xs text-amber-200/90">{mirrorSessionError}</p>
+              ) : (
+                <>
+                  <p className="text-sm text-white/70">
+                    Signed in as <span className="text-white">{firebaseUser.email ?? 'private user'}</span>
+                  </p>
+                  <p className="text-xs text-white/45">
+                    Role: {isAdmin ? 'Household admin' : 'Member'} · Mirror claimed: {mirrorSession?.hardware_claimed ? 'yes' : 'no'}
+                  </p>
+                </>
+              )}
+            </GlassCard>
 
             <GlassCard className="space-y-4">
               <h3 className="text-sm font-medium text-white/90">Sign in on the mirror (QR)</h3>
               <p className="text-xs text-white/40">
-                Starts device login. Your mirror will show a QR code and code — complete sign-in on your phone.
+                Starts a secure pairing session for the currently signed-in Firebase user. Your mirror may show a QR code or pairing code.
               </p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <button
                   type="button"
+                  disabled={pairingBusy}
                   className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
-                  onClick={async () => {
-                    try {
-                      await mirrorAuthStartDeviceLogin(mirrorHttpBase, 'google');
-                      toast.success('Check the mirror for a QR code.');
-                    } catch (e) {
-                      toast.error(e instanceof Error ? e.message : 'Failed to start Google login');
-                    }
-                  }}
+                  onClick={() => void startProviderPairing('google', 'mirror')}
                 >
                   Google (QR on mirror)
                 </button>
                 <button
                   type="button"
+                  disabled={pairingBusy}
                   className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
-                  onClick={async () => {
-                    try {
-                      await mirrorAuthStartDeviceLogin(mirrorHttpBase, 'microsoft');
-                      toast.success('Check the mirror for a QR code.');
-                    } catch (e) {
-                      toast.error(e instanceof Error ? e.message : 'Failed to start Microsoft login');
-                    }
-                  }}
+                  onClick={() => void startProviderPairing('microsoft', 'mirror')}
                 >
                   Microsoft (QR on mirror)
                 </button>
               </div>
+              {activePairing ? (
+                <p className="text-xs text-white/45">
+                  Active pairing: {buildPendingPairingView(activePairing)?.code ?? 'waiting for code'} · {activePairing.status}
+                </p>
+              ) : null}
             </GlassCard>
 
             <GlassCard className="space-y-4">
               <h3 className="text-sm font-medium text-white/90">Sign in on this device</h3>
               <p className="text-xs text-white/40">
-                Opens your browser to Google or Microsoft, then returns to the mirror. Use when you prefer not to use the mirror screen.
+                Opens provider auth in your browser and returns with a pairing session bound to this Firebase user.
               </p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <button
                   type="button"
+                  disabled={pairingBusy}
                   className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
-                  onClick={() => {
-                    window.location.href = mirrorOAuthWebStartUrl(mirrorHttpBase, 'google');
-                  }}
+                  onClick={() => void startProviderPairing('google', 'browser')}
                 >
                   Google in browser
                 </button>
                 <button
                   type="button"
+                  disabled={pairingBusy}
                   className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
-                  onClick={() => {
-                    window.location.href = mirrorOAuthWebStartUrl(mirrorHttpBase, 'microsoft');
-                  }}
+                  onClick={() => void startProviderPairing('microsoft', 'browser')}
                 >
                   Microsoft in browser
                 </button>
@@ -1488,36 +1942,67 @@ export default function App() {
               {mirrorAuthList.length === 0 ? (
                 <p className="text-xs text-white/35">Could not load status. Check mirror HTTP base in Settings.</p>
               ) : (
-                <ul className="space-y-2">
-                  {mirrorAuthList.map((row) => (
-                    <li
-                      key={row.provider}
-                      className="flex items-center justify-between gap-3 text-sm border border-white/10 rounded-xl px-3 py-2"
-                    >
-                      <span className="capitalize">{row.provider}</span>
-                      <span className={row.connected ? 'text-emerald-400' : 'text-white/40'}>
-                        {row.connected ? 'Connected' : 'Not connected'}
-                      </span>
-                      {row.connected && (
-                        <button
-                          type="button"
-                          className="text-xs text-red-300 hover:text-red-200"
-                          onClick={async () => {
-                            try {
-                              await mirrorAuthLogout(mirrorHttpBase, row.provider);
-                              toast.success('Disconnected');
-                              void loadMirrorAuth();
-                            } catch (e) {
-                              toast.error(e instanceof Error ? e.message : 'Disconnect failed');
-                            }
-                          }}
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <p className="text-[11px] uppercase tracking-[0.22em] text-white/35">Your linked providers</p>
+                    <ul className="space-y-2">
+                      {currentUserProviders.map((row) => (
+                        <li
+                          key={`${row.owner_user_uid ?? firebaseUser.uid}-${row.provider}`}
+                          className="flex items-center justify-between gap-3 text-sm border border-white/10 rounded-xl px-3 py-2"
                         >
-                          Disconnect
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                          <div>
+                            <span className="capitalize">{row.provider}</span>
+                            <p className="text-[11px] text-white/35">{row.owner_email ?? firebaseUser.email ?? 'Current user'}</p>
+                          </div>
+                          <span className={row.connected ? 'text-emerald-400' : 'text-white/40'}>
+                            {row.connected ? 'Connected' : 'Not connected'}
+                          </span>
+                          {row.connected && row.can_disconnect !== false ? (
+                            <button
+                              type="button"
+                              className="text-xs text-red-300 hover:text-red-200"
+                              onClick={() => setDisconnectCandidate(row)}
+                            >
+                              Disconnect
+                            </button>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {isAdmin && managedProviders.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-white/35">Admin-managed household providers</p>
+                      <ul className="space-y-2">
+                        {managedProviders.map((row) => (
+                          <li
+                            key={`${row.owner_user_uid ?? 'external'}-${row.provider}`}
+                            className="flex items-center justify-between gap-3 text-sm border border-white/10 rounded-xl px-3 py-2"
+                          >
+                            <div>
+                              <span className="capitalize">{row.provider}</span>
+                              <p className="text-[11px] text-white/35">{row.owner_email ?? row.owner_user_uid ?? 'Household member'}</p>
+                            </div>
+                            <span className={row.connected ? 'text-emerald-400' : 'text-white/40'}>
+                              {row.connected ? 'Connected' : 'Not connected'}
+                            </span>
+                            {row.connected && row.can_disconnect ? (
+                              <button
+                                type="button"
+                                className="text-xs text-red-300 hover:text-red-200"
+                                onClick={() => setDisconnectCandidate(row)}
+                              >
+                                Disconnect
+                              </button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
               )}
             </GlassCard>
             <GlassCard className="space-y-3">
@@ -1876,6 +2361,94 @@ export default function App() {
         )}
       </main>
 
+      <AnimatePresence>
+        {disconnectCandidate ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDisconnectCandidate(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 12 }}
+              className="relative w-full max-w-md rounded-3xl border border-white/10 bg-zinc-950/95 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
+            >
+              <h3 className="text-lg font-medium text-white">Disconnect linked account?</h3>
+              <p className="mt-3 text-sm text-white/60">
+                {disconnectCandidate.owner_email && disconnectCandidate.owner_email !== firebaseUser.email
+                  ? `This will remove ${disconnectCandidate.provider} access for ${disconnectCandidate.owner_email}.`
+                  : `This will remove ${disconnectCandidate.provider} access from your mirror account.`}
+              </p>
+              <div className="mt-6 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDisconnectCandidate(null)}
+                  className="flex-1 rounded-full border border-white/10 bg-white/[0.05] px-4 py-3 text-sm text-white/75"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmDisconnect()}
+                  className="flex-1 rounded-full bg-red-400 px-4 py-3 text-sm font-medium text-black"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {pendingReplacement ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setPendingReplacement(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 12 }}
+              className="relative w-full max-w-lg rounded-3xl border border-white/10 bg-zinc-950/95 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
+            >
+              <h3 className="text-lg font-medium text-white">Replace the current session?</h3>
+              <p className="mt-3 text-sm text-white/60">
+                This pairing completed for{' '}
+                {'user' in pendingReplacement
+                  ? pendingReplacement.user.email ?? 'another user'
+                  : pendingReplacement.paired_user?.email ?? 'another user'}
+                . Confirming will sign out {firebaseUser.email ?? 'the current user'} and continue as that person.
+              </p>
+              <div className="mt-6 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPendingReplacement(null)}
+                  className="flex-1 rounded-full border border-white/10 bg-white/[0.05] px-4 py-3 text-sm text-white/75"
+                >
+                  Stay signed in
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmSessionReplacement()}
+                  className="flex-1 rounded-full bg-white px-4 py-3 text-sm font-medium text-black"
+                >
+                  Replace session
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
+
       {/* Bottom Nav / Status */}
       <div className="fixed bottom-0 inset-x-0 p-6 bg-gradient-to-t from-black via-black/80 to-transparent z-40">
         <div className="max-w-7xl mx-auto flex items-center justify-center lg:justify-end">
@@ -1893,5 +2466,186 @@ export default function App() {
       </div>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [signInBusy, setSignInBusy] = useState(false);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingCode, setPairingCode] = useState(() => readPairingQueryFromWindow().pairingCode);
+  const [notice, setNotice] = useState<PrivateLoginGateNotice | null>(null);
+  const [pendingPairing, setPendingPairing] = useState<PrivateLoginGatePendingPairing | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsDraft, setSettingsDraft] = useState<PublicMirrorSettingsDraft>(() => readDeviceSettingsDraft());
+  const [settingsStatus, setSettingsStatus] = useState<PublicMirrorSettingsStatus | null>(null);
+
+  useEffect(() => {
+    void ensureFirebaseAuthReady().catch(() => undefined);
+    const unsubscribe = subscribeToFirebaseAuth((user) => {
+      setFirebaseUser(user);
+      setAuthResolved(true);
+      if (user) {
+        setPendingPairing(null);
+        setNotice(null);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  const handleSaveSettings = useCallback(() => {
+    const next = persistDeviceSettingsDraft(settingsDraft);
+    setSettingsDraft(next);
+    setSettingsStatus({
+      tone: 'success',
+      label: 'Device settings saved',
+      detail: 'These public mirror settings apply before and after sign-in.',
+    });
+    setShowSettings(false);
+  }, [settingsDraft]);
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setSignInBusy(true);
+    setNotice(null);
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      setNotice({
+        tone: 'danger',
+        title: 'Google sign-in failed',
+        detail: formatErrorMessage(error, 'Could not start Google sign-in.'),
+      });
+    } finally {
+      setSignInBusy(false);
+    }
+  }, []);
+
+  const handleRedeemPairingCode = useCallback(async () => {
+    const base = settingsDraft.mirrorHttpBase.trim();
+    if (!base) {
+      setNotice({
+        tone: 'warning',
+        title: 'Mirror settings are required',
+        detail: 'Set the mirror HTTP base before redeeming a pairing code.',
+      });
+      setShowSettings(true);
+      return;
+    }
+    if (!pairingCode.trim()) return;
+
+    const normalizedCode = pairingCode.trim().toUpperCase();
+    setPairingBusy(true);
+    setNotice(null);
+    try {
+      const redeemed = await mirrorRedeemAuthPairing(base, { pairing_code: normalizedCode });
+      setPendingPairing(
+        buildPendingPairingView({
+          ...redeemed,
+          pairing_code: normalizedCode,
+        }),
+      );
+      const finalized = await mirrorFinalizeAuthPairing(base, redeemed.pairing_id);
+      const ready = finalized.custom_token_ready
+        ? finalized
+        : await waitForPairingReady(base, redeemed.pairing_id, (status) => {
+            setPendingPairing(
+              buildPendingPairingView({
+                ...status,
+                pairing_code: status.pairing_code ?? normalizedCode,
+              }),
+            );
+          });
+
+      if (ready.status === 'expired') {
+        throw new Error('This pairing code expired. Start again from the mirror and redeem the new code.');
+      }
+      if (ready.status === 'error' || !ready.custom_token_ready) {
+        throw new Error(ready.error_message ?? 'The pairing completed, but Firebase sign-in is not ready yet.');
+      }
+
+      const exchange = await mirrorExchangeAuthPairingToken(base, redeemed.pairing_id);
+      await signInWithFirebaseCustomToken(exchange.custom_token);
+      clearPairingQueryFromWindow();
+      setNotice({
+        tone: 'success',
+        title: 'Signed in securely',
+        detail: `Connected as ${exchange.user.email ?? 'your mirror account'}.`,
+      });
+    } catch (error) {
+      setNotice({
+        tone: 'danger',
+        title: 'Could not redeem pairing code',
+        detail: formatErrorMessage(error, 'The mirror pairing could not be completed.'),
+      });
+    } finally {
+      setPairingBusy(false);
+    }
+  }, [pairingCode, settingsDraft.mirrorHttpBase]);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      if (firebaseUser) {
+        clearLayoutCache(firebaseUser.uid);
+      }
+      await signOutFromFirebase();
+      clearPairingQueryFromWindow();
+      setPairingCode('');
+      setPendingPairing(null);
+      setNotice({
+        tone: 'neutral',
+        title: 'Signed out',
+        detail: 'Mirror data is hidden until someone signs in again.',
+      });
+    } catch (error) {
+      toast.error(formatErrorMessage(error, 'Could not sign out.'));
+    }
+  }, [firebaseUser]);
+
+  const settingsSummary = useMemo(
+    () => ({
+      configured: Boolean(settingsDraft.mirrorHttpBase.trim() && settingsDraft.hardwareId.trim()),
+      mirrorHttpBase: settingsDraft.mirrorHttpBase.trim() || undefined,
+      hardwareId: settingsDraft.hardwareId.trim() || undefined,
+    }),
+    [settingsDraft.hardwareId, settingsDraft.mirrorHttpBase],
+  );
+
+  if (!authResolved || !firebaseUser) {
+    return (
+      <>
+        <Toaster theme="dark" position="top-center" />
+        <PrivateLoginGate
+          mode={authResolved ? 'signed_out' : 'loading'}
+          pairingCode={pairingCode}
+          onPairingCodeChange={setPairingCode}
+          onRedeemPairingCode={() => void handleRedeemPairingCode()}
+          onGoogleSignIn={() => void handleGoogleSignIn()}
+          onOpenSettings={() => setShowSettings(true)}
+          signInBusy={signInBusy}
+          signInDisabled={pairingBusy}
+          pairingBusy={pairingBusy}
+          notice={notice}
+          pendingPairing={pendingPairing}
+          settingsSummary={settingsSummary}
+        />
+        <PublicMirrorSettingsModal
+          open={showSettings}
+          draft={settingsDraft}
+          onDraftChange={setSettingsDraft}
+          onClose={() => setShowSettings(false)}
+          onSave={handleSaveSettings}
+          status={settingsStatus}
+        />
+      </>
+    );
+  }
+
+  return (
+    <AuthenticatedApp
+      key={firebaseUser.uid}
+      firebaseUser={firebaseUser}
+      onSignOut={handleSignOut}
+    />
   );
 }
