@@ -16,9 +16,16 @@ import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import firebaseConfig from "../firebase-applet-config.json";
 
-const app = initializeApp(firebaseConfig);
+type FirebaseAppletConfig = typeof firebaseConfig & {
+  firestoreDatabaseId?: string;
+};
+
+const typedFirebaseConfig = firebaseConfig as FirebaseAppletConfig;
+const app = initializeApp(typedFirebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = typedFirebaseConfig.firestoreDatabaseId
+  ? getFirestore(app, typedFirebaseConfig.firestoreDatabaseId)
+  : getFirestore(app);
 export const storage = getStorage(app);
 export const googleAuthProvider = new GoogleAuthProvider();
 

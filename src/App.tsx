@@ -42,8 +42,6 @@ import {
   mirrorGetSession,
   mirrorAuthProviders,
   mirrorAuthLogout,
-  mirrorDeleteProfile,
-  mirrorListProfiles,
   mirrorOAuthWebStartUrl,
   mirrorRedeemAuthPairing,
   mirrorStartAuthPairing,
@@ -66,7 +64,6 @@ import { PublicMirrorSettingsModal, type PublicMirrorSettingsDraft, type PublicM
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type {
   CalendarEventItem,
-  MirrorProfile,
   MirrorAuthPairingStatusResponse,
   MirrorAuthPairingTokenExchangeResponse,
   MirrorSessionResponse,
@@ -81,9 +78,7 @@ import {
   getMirrorHardwareId,
   getMirrorHardwareToken,
   getMirrorHttpBase,
-  getMirrorIdentityContext,
   getMirrorWsUrl,
-  setMirrorIdentityContext,
   setMirrorHttpBase as persistMirrorHttpBase,
   setMirrorHardwareId as persistMirrorHardwareId,
   setMirrorHardwareToken as persistMirrorHardwareToken,
@@ -125,8 +120,6 @@ function parseHost(rawBase: string): string {
     return '';
   }
 }
-
-const BROWSER_GOOGLE_AUTH_PENDING_KEY = 'mirror_google_browser_auth_pending';
 
 const SIZE_DROPDOWN_ITEMS: Array<{ id: WidgetSizePreset; label: string }> = [
   { id: 'small', label: 'Small' },
@@ -541,9 +534,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
-  const initialIdentity = useMemo(() => getMirrorIdentityContext(), []);
-  const [mirrorHardwareId, setMirrorHardwareId] = useState(initialIdentity?.hardwareId ?? '');
-  const [mirrorUserId, setMirrorUserId] = useState(initialIdentity?.userId ?? '');
+  const [mirrorHardwareId, setMirrorHardwareId] = useState(() => getMirrorHardwareId() ?? '');
   const connectionManagerRef = useRef<MirrorConnectionManager | null>(null);
   const [mirrorHttpBase, setMirrorHttpBase] = useState(() => {
     if (typeof window === 'undefined') return mirrorHttpFallbackFromWindow();
@@ -564,16 +555,11 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
   const [mirrorHardwareIdDraft, setMirrorHardwareIdDraft] = useState(mirrorHardwareId);
-  const [mirrorUserIdDraft, setMirrorUserIdDraft] = useState(mirrorUserId);
   const [hardwareTokenDraft, setHardwareTokenDraft] = useState(() => getMirrorHardwareToken() ?? '');
   const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
   const [mirrorSession, setMirrorSession] = useState<MirrorSessionResponse | null>(null);
   const [mirrorSessionLoading, setMirrorSessionLoading] = useState(true);
   const [mirrorSessionError, setMirrorSessionError] = useState<string | null>(null);
-  const [mirrorProfiles, setMirrorProfiles] = useState<MirrorProfile[]>([]);
-  const [profilesLoading, setProfilesLoading] = useState(false);
-  const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
-  const [authGateError, setAuthGateError] = useState<string | null>(null);
   const [calendarEventsPreview, setCalendarEventsPreview] = useState<CalendarEventItem[]>([]);
   const [calendarTasksPreview, setCalendarTasksPreview] = useState<CalendarEventItem[]>([]);
   const [calendarPreviewProviders, setCalendarPreviewProviders] = useState<string[]>([]);
@@ -586,11 +572,10 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const remoteRefreshInFlightRef = useRef(false);
   const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
   const handledPairingQueryRef = useRef<string>('');
-  const hasMirrorIdentity = Boolean(mirrorHardwareId.trim() && mirrorUserId.trim());
-  const googleLinked = mirrorAuthList.some((row) => row.provider === 'google' && row.connected);
-  const hasMirrorHttpBase = Boolean(mirrorHttpBase.trim());
-  const companionLocked = !hasMirrorIdentity || Boolean(authGateError) || !googleLinked;
-  const [authGateLoading, setAuthGateLoading] = useState(false);
+  const sessionBootstrapReady = Boolean(
+    mirrorSession?.user?.uid === firebaseUser.uid
+      && mirrorSession?.active_profile?.user_uid === firebaseUser.uid,
+  );
 
   const filteredTemplates = useMemo(() => {
     if (activeTemplateCategory === 'all') return CUSTOM_WIDGET_TEMPLATES;
@@ -616,49 +601,14 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     setMirrorHttpDraft(mirrorHttpBase);
     setWsUrlDraft(wsUrl);
     setMirrorHardwareIdDraft(mirrorHardwareId);
-    setMirrorUserIdDraft(mirrorUserId);
     setHardwareTokenDraft(getMirrorHardwareToken() ?? '');
-  }, [showSettings, mirrorHttpBase, wsUrl]);
+  }, [showSettings, mirrorHardwareId, mirrorHttpBase, wsUrl]);
 
   const scopedWsUrl = useMemo(() => buildScopedWsUrl(wsUrl), [wsUrl, mirrorHardwareId]);
 
   useEffect(() => {
     setWsUrl(getMirrorWsUrl());
-  }, [mirrorHardwareId, mirrorUserId]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const hardwareId = params.get('mirror_hardware_id')?.trim() || '';
-    const userId = params.get('mirror_user_id')?.trim() || '';
-    const source = params.get('source')?.trim() || '';
-    if (!hardwareId && !userId) return;
-    if (hardwareId) setMirrorHardwareId(hardwareId);
-    if (userId) setMirrorUserId(userId);
-    setMirrorIdentityContext({ hardwareId, userId });
-    setActiveTab('accounts');
-    if (source === 'mirror_qr_create') {
-      setAuthNotice('Google account created and linked to this mirror profile.');
-    }
-    params.delete('mirror_hardware_id');
-    params.delete('mirror_user_id');
-    params.delete('source');
-    const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`;
-    window.history.replaceState({}, '', next);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const pending = window.sessionStorage.getItem(BROWSER_GOOGLE_AUTH_PENDING_KEY);
-      if (!pending) return;
-      window.sessionStorage.removeItem(BROWSER_GOOGLE_AUTH_PENDING_KEY);
-      setActiveTab('accounts');
-      setAuthNotice('Checking Google connection status for this mirror profile...');
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  }, [mirrorHardwareId]);
 
   const loadLayoutFromMirror = useCallback(async (opts?: { silent?: boolean }) => {
     const configuredBase = mirrorHttpBase.trim();
@@ -745,66 +695,19 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     }
   }, []);
 
-  const loadMirrorAuth = useCallback(async (opts?: { forGate?: boolean }) => {
+  const loadMirrorAuth = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
-    if (!hasMirrorIdentity) {
-      setMirrorAuthList([]);
-      setAuthGateError(null);
-      return;
-    }
     if (!base) {
       setMirrorAuthList([]);
-      setAuthGateError(base ? null : 'Mirror HTTP base is not configured.');
       return;
     }
-    if (opts?.forGate) setAuthGateLoading(true);
     try {
       const list = await mirrorAuthProviders(base);
       setMirrorAuthList(list);
-      setAuthGateError(null);
-      if (list.some((row) => row.provider === 'google' && row.connected)) {
-        setAuthNotice((current) =>
-          current === 'Checking Google connection status for this mirror profile...'
-            ? 'Google is connected for this mirror profile.'
-            : current,
-        );
-      }
-    } catch (error) {
-      setMirrorAuthList([]);
-      if (opts?.forGate) {
-        setAuthGateError(error instanceof Error ? error.message : 'Could not verify Google sign-in.');
-      }
-    } finally {
-      if (opts?.forGate) setAuthGateLoading(false);
-    }
-  }, [hasMirrorIdentity]);
-
-  const loadMirrorProfiles = useCallback(async () => {
-    const base = mirrorHttpRef.current.trim();
-    if (!base || !hasMirrorIdentity) {
-      setMirrorProfiles([]);
-      return [];
-    }
-    setProfilesLoading(true);
-    try {
-      const list = await mirrorListProfiles(base);
-      setMirrorProfiles(list);
-      return list;
     } catch {
-      setMirrorProfiles([]);
-      return [];
-    } finally {
-      setProfilesLoading(false);
+      setMirrorAuthList([]);
     }
-  }, [hasMirrorIdentity]);
-
-  useEffect(() => {
-    if (!hasMirrorIdentity) {
-      setAuthGateLoading(false);
-      return;
-    }
-    void loadMirrorAuth({ forGate: true });
-  }, [hasMirrorIdentity, mirrorHardwareId, mirrorUserId, mirrorHttpBase, loadMirrorAuth]);
+  }, []);
 
   const refreshMirrorSecurityState = useCallback(async () => {
     await Promise.all([loadMirrorSession(), loadMirrorAuth()]);
@@ -812,7 +715,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 
   const loadCalendarPreview = useCallback(async () => {
     const base = mirrorHttpRef.current.trim();
-    if (!base || !hasMirrorIdentity) {
+    if (!base) {
       setCalendarEventsPreview([]);
       setCalendarTasksPreview([]);
       setCalendarPreviewProviders([]);
@@ -837,24 +740,30 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     } finally {
       setCalendarPreviewLoading(false);
     }
-  }, [hasMirrorIdentity]);
+  }, []);
 
   useEffect(() => {
-    void loadMirrorSession();
-  }, [loadMirrorSession]);
+    void refreshMirrorSecurityState();
+  }, [mirrorHardwareId, mirrorHttpBase, refreshMirrorSecurityState]);
+
+  useEffect(() => {
+    if (sessionBootstrapReady) return;
+    const id = window.setInterval(() => {
+      void loadMirrorSession();
+    }, 3000);
+    return () => clearInterval(id);
+  }, [loadMirrorSession, sessionBootstrapReady]);
 
   useEffect(() => {
     if (activeTab !== 'accounts') return;
     void refreshMirrorSecurityState();
-    void loadMirrorProfiles();
     void loadCalendarPreview();
     const id = window.setInterval(() => {
       void refreshMirrorSecurityState();
-      void loadMirrorProfiles();
       void loadCalendarPreview();
     }, 8000);
     return () => clearInterval(id);
-  }, [activeTab, loadCalendarPreview, loadMirrorProfiles, refreshMirrorSecurityState]);
+  }, [activeTab, loadCalendarPreview, refreshMirrorSecurityState]);
 
   const schedulePushLayoutToMirror = useCallback(
     (list: Widget[]) => {
@@ -1491,68 +1400,6 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     }
   }, [completePairingFlow, pendingReplacement]);
 
-  const handleGoogleBrowserSignIn = () => {
-    if (!hasMirrorIdentity) {
-      setAuthNotice('Set the mirror hardware id and mirror user id in Settings before starting Google sign-in.');
-      setShowSettings(true);
-      return;
-    }
-    if (!hasMirrorHttpBase) {
-      setAuthNotice('Set the mirror HTTP base in Settings before starting Google sign-in.');
-      setShowSettings(true);
-      return;
-    }
-    setAuthNotice(null);
-    setAuthGateError(null);
-    try {
-      window.sessionStorage.setItem(BROWSER_GOOGLE_AUTH_PENDING_KEY, '1');
-    } catch {
-      /* ignore */
-    }
-    window.location.href = mirrorOAuthWebStartUrl(mirrorHttpBase, 'google');
-  };
-
-  const handleDeleteProfile = async (profile: MirrorProfile) => {
-    const base = mirrorHttpRef.current.trim();
-    if (!base || !hasMirrorIdentity) return;
-    const confirmed = window.confirm(`Remove ${profile.display_name?.trim() || profile.user_id} from this mirror?`);
-    if (!confirmed) return;
-    try {
-      setDeletingProfileId(profile.user_id);
-      await mirrorDeleteProfile(base, profile.user_id);
-      const nextProfiles = await loadMirrorProfiles();
-      if (profile.user_id === mirrorUserId) {
-        const replacement = nextProfiles.find((row) => row.is_active) ?? nextProfiles[0] ?? null;
-        const nextUserId = replacement?.user_id ?? '';
-        setMirrorIdentityContext({ hardwareId: mirrorHardwareId, userId: nextUserId });
-        setMirrorUserId(nextUserId);
-        setMirrorUserIdDraft(nextUserId);
-        setWsUrl(getMirrorWsUrl());
-        setAuthNotice(
-          nextUserId
-            ? 'Active mirror profile changed after account removal.'
-            : 'All mirror profiles were removed. Set up a new Google account to continue.',
-        );
-      } else {
-        setAuthNotice('Mirror account removed.');
-      }
-      await loadMirrorAuth();
-      toast.success('Account removed');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to remove account');
-    } finally {
-      setDeletingProfileId(null);
-    }
-  };
-
-  if (authGateLoading) {
-    return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        <div className="text-sm text-white/60">Checking Google sign-in for this mirror profile...</div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-black text-white p-6 font-[var(--font-sans)] selection:bg-white/20 relative overflow-hidden">
       <div className="fixed inset-0 pointer-events-none z-0">
@@ -1562,59 +1409,47 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
       </div>
       <div className="relative z-10">
       <Toaster theme="dark" position="top-center" />
-      {companionLocked && (
+      {!sessionBootstrapReady && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm">
           <div className="w-full max-w-md bg-zinc-950/90 border border-white/[0.08] rounded-3xl p-8 space-y-4 shadow-[0_24px_80px_rgba(0,0,0,0.6)]">
             <h1 className="text-2xl font-medium font-[var(--font-display)]">Mirror Companion</h1>
-            <p className="text-sm text-white/55">
-              {!hasMirrorIdentity
-                ? 'This companion app stays locked until you choose a mirror identity.'
-                : authGateError
-                  ? 'We could not verify Google sign-in for this mirror profile yet.'
-                : 'This companion app is gated by Google sign-in for the current mirror profile.'}
-            </p>
-            {hasMirrorIdentity ? (
-              <p className="text-xs text-white/40">
-                Hardware: {mirrorHardwareId}
-                <br />
-                User: {mirrorUserId}
+            {mirrorSessionLoading ? (
+              <p className="text-sm text-white/55">
+                Connecting your Firebase session to the mirror and waiting for the active profile to appear.
+              </p>
+            ) : mirrorSessionError ? (
+              <p className="text-sm text-white/55">
+                We could not bootstrap the mirror session yet. Check the device settings and backend auth contract.
               </p>
             ) : (
-              <p className="text-xs text-white/40">
-                Open settings to choose the mirror hardware id and active mirror account first.
+              <p className="text-sm text-white/55">
+                Firebase sign-in succeeded. The app will unlock as soon as this mirror activates your profile.
               </p>
             )}
-            {authGateError && <p className="text-sm text-amber-300/90">{authGateError}</p>}
-            {authNotice && <p className="text-sm text-amber-300/90">{authNotice}</p>}
-            {hasMirrorIdentity && !authGateError && (
-              <button
-                type="button"
-                onClick={handleGoogleBrowserSignIn}
-                className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90"
-              >
-                Sign in with Google
-              </button>
-            )}
-            {hasMirrorIdentity && authGateError && (
-              <button
-                type="button"
-                onClick={() => void loadMirrorAuth({ forGate: true })}
-                className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90"
-              >
-                Retry Google check
-              </button>
-            )}
+            <p className="text-xs text-white/40">
+              Hardware: {mirrorHardwareId || 'Not set'}
+              <br />
+              Active profile: {mirrorSession?.active_profile?.email ?? mirrorSession?.active_profile?.user_uid ?? 'waiting'}
+            </p>
+            {mirrorSessionError ? <p className="text-sm text-amber-300/90">{mirrorSessionError}</p> : null}
+            <button
+              type="button"
+              onClick={() => void refreshMirrorSecurityState()}
+              className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90"
+            >
+              Retry session bootstrap
+            </button>
             <button
               type="button"
               onClick={() => setShowSettings(true)}
               className="w-full border border-white/10 text-white/70 py-3 rounded-xl hover:border-white/25 hover:text-white"
             >
-              {hasMirrorIdentity ? 'Edit Mirror Identity' : 'Choose Mirror Identity'}
+              Open device settings
             </button>
           </div>
         </div>
       )}
-      
+
       <header className="max-w-7xl mx-auto flex items-center justify-between mb-8 lg:mb-12">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-white/[0.06] backdrop-blur-sm border border-white/[0.08] flex items-center justify-center shadow-[0_4px_16px_rgba(0,0,0,0.3)]">
@@ -1750,16 +1585,6 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Mirror user id</label>
-                  <input
-                    type="text"
-                    value={mirrorUserIdDraft}
-                    onChange={(e) => setMirrorUserIdDraft(e.target.value)}
-                    placeholder="google-user-id"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
-                  />
-                </div>
-                <div className="space-y-2">
                   <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">
                     Mirror Hardware Token
                   </label>
@@ -1778,17 +1603,14 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
                     const v = mirrorHttpDraft.trim();
                     const nextWs = wsUrlDraft.trim();
                     const nextHardwareId = mirrorHardwareIdDraft.trim();
-                    const nextUserId = mirrorUserIdDraft.trim();
                     const nextHardwareToken = hardwareTokenDraft.trim();
                     persistMirrorHttpBase(v);
                     if (nextWs) persistMirrorWsUrl(nextWs);
-                    setMirrorIdentityContext({ hardwareId: nextHardwareId, userId: nextUserId });
                     persistMirrorHardwareId(nextHardwareId);
                     persistMirrorHardwareToken(nextHardwareToken);
                     setMirrorHttpBase(v);
                     if (nextWs) setWsUrl(nextWs);
                     setMirrorHardwareId(nextHardwareId);
-                    setMirrorUserId(nextUserId);
                     setAuthNotice(null);
                     setShowSettings(false);
                   }}
@@ -2113,24 +1935,36 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
                   <p className="text-xs text-white/45">
                     Role: {isAdmin ? 'Household admin' : 'Member'} · Mirror claimed: {mirrorSession?.hardware_claimed ? 'yes' : 'no'}
                   </p>
+                  <p className="text-xs text-white/45">
+                    Active profile:{' '}
+                    <span className="text-white/80">
+                      {mirrorSession?.active_profile?.display_name
+                        ?? mirrorSession?.active_profile?.email
+                        ?? mirrorSession?.active_profile?.user_uid
+                        ?? 'Waiting for mirror activation'}
+                    </span>
+                  </p>
+                  {mirrorSession?.active_profile?.email ? (
+                    <p className="text-xs text-white/35">{mirrorSession.active_profile.email}</p>
+                  ) : null}
                 </>
               )}
             </GlassCard>
 
             <GlassCard className="space-y-4">
-              <h3 className="text-sm font-medium text-white/90">Mirror identity context</h3>
+              <h3 className="text-sm font-medium text-white/90">Device context</h3>
               <div className="space-y-2 text-xs text-white/55">
                 <p>Hardware: {mirrorHardwareId || 'Not set'}</p>
-                <p>User: {mirrorUserId || 'Not set'}</p>
+                <p>HTTP base: {mirrorHttpBase || 'Not set'}</p>
               </div>
               {authNotice && (
                 <p className="text-xs text-amber-300/90">
                   {authNotice}
                 </p>
               )}
-              {!hasMirrorIdentity && (
+              {!mirrorHardwareId.trim() && (
                 <p className="text-xs text-white/40">
-                  Open Settings and enter the mirror hardware id and active mirror user id first, or complete Create Account from the mirror QR flow.
+                  Set the mirror hardware id in Settings so the backend can attach this Firebase session to the right mirror device.
                 </p>
               )}
             </GlassCard>
@@ -2192,8 +2026,10 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 
             <GlassCard className="space-y-3">
               <h3 className="text-sm font-medium text-white/90">Status</h3>
-              {!hasMirrorIdentity ? (
-                <p className="text-xs text-white/35">Mirror identity is not configured yet.</p>
+              {mirrorSessionLoading ? (
+                <p className="text-xs text-white/35">Loading household status...</p>
+              ) : mirrorSessionError ? (
+                <p className="text-xs text-amber-200/90">{mirrorSessionError}</p>
               ) : mirrorAuthList.length === 0 ? (
                 <p className="text-xs text-white/35">Could not load status. Check mirror HTTP base in Settings.</p>
               ) : (
@@ -2260,34 +2096,28 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
                 </div>
               )}
             </GlassCard>
-
             <GlassCard className="space-y-3">
-              <h3 className="text-sm font-medium text-white/90">Mirror accounts</h3>
-              {profilesLoading ? (
-                <p className="text-xs text-white/35">Loading mirror profiles...</p>
-              ) : mirrorProfiles.length === 0 ? (
-                <p className="text-xs text-white/35">No mirror profiles found.</p>
+              <h3 className="text-sm font-medium text-white/90">Active mirror profile</h3>
+              {mirrorSessionLoading ? (
+                <p className="text-xs text-white/35">Loading active profile...</p>
+              ) : !mirrorSession?.active_profile ? (
+                <p className="text-xs text-white/35">No active profile has been activated for this mirror yet.</p>
               ) : (
                 <ul className="space-y-2">
-                  {mirrorProfiles.map((profile) => (
+                  {[mirrorSession.active_profile].map((profile) => (
                     <li
-                      key={profile.user_id}
+                      key={profile.user_uid}
                       className="flex items-center justify-between gap-3 text-sm border border-white/10 rounded-xl px-3 py-2"
                     >
                       <div className="min-w-0">
-                        <div className="truncate text-white/85">{profile.display_name?.trim() || profile.user_id}</div>
+                        <div className="truncate text-white/85">{profile.display_name?.trim() || profile.email || profile.user_uid}</div>
                         <div className="truncate text-xs text-white/40">
-                          {profile.user_id}{profile.is_active ? ' · Active' : ''}
+                          {profile.email || profile.user_uid}{profile.is_active ? ' · Active' : ''}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        disabled={deletingProfileId === profile.user_id}
-                        className="text-xs text-red-300 hover:text-red-200 disabled:opacity-40 disabled:cursor-not-allowed"
-                        onClick={() => void handleDeleteProfile(profile)}
-                      >
-                        {deletingProfileId === profile.user_id ? 'Removing...' : 'Remove'}
-                      </button>
+                      <span className="text-xs text-emerald-300/80">
+                        {profile.is_active ? 'Current mirror user' : 'Pending'}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -2295,8 +2125,10 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
             </GlassCard>
             <GlassCard className="space-y-3">
               <h3 className="text-sm font-medium text-white/90">Calendar + tasks preview</h3>
-              {!hasMirrorIdentity ? (
-                <p className="text-xs text-white/35">Set mirror identity first to preview Google-backed widgets.</p>
+              {mirrorSessionLoading ? (
+                <p className="text-xs text-white/35">Waiting for session bootstrap...</p>
+              ) : mirrorSessionError ? (
+                <p className="text-xs text-amber-200/90">Mirror session bootstrap must succeed before Google-backed widgets can preview.</p>
               ) : calendarPreviewLoading ? (
                 <p className="text-xs text-white/35">Loading feed preview...</p>
               ) : (

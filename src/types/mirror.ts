@@ -79,12 +79,21 @@ export interface MirrorSessionUser {
   photo_url?: string | null;
 }
 
+export interface MirrorActiveProfile {
+  user_uid: string;
+  display_name?: string | null;
+  photo_url?: string | null;
+  email?: string | null;
+  is_active: boolean;
+}
+
 export interface MirrorSessionResponse {
   user: MirrorSessionUser | null;
   hardware_id: string | null;
   hardware_claimed: boolean;
   role: MirrorHouseholdRole | null;
   claimed_by_user_uid?: string | null;
+  active_profile?: MirrorActiveProfile | null;
 }
 
 export interface MirrorAuthProviderStatus {
