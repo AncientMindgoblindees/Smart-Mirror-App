@@ -1599,7 +1599,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
       {/* Settings Modal */}
       <AnimatePresence>
         {showSettings && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -2710,10 +2710,8 @@ export default function App() {
 
   const buildPairingHandoff = useCallback(
     (overrides?: Partial<PairingQueryState>): PairingQueryState =>
-      mergePairingState(readPairingQueryFromWindow(), readPendingPairingHandoff(), {
-        pairingCode,
-      }, overrides),
-    [pairingCode],
+      mergePairingState(readPairingQueryFromWindow(), readPendingPairingHandoff(), overrides),
+    [],
   );
 
   const handleSaveSettings = useCallback(() => {
@@ -2838,9 +2836,6 @@ export default function App() {
     if (!redirectResultResolved || firebaseUser) return;
 
     const handoff = buildPairingHandoff();
-    if (!handoff.pairingCode && pairingCode) {
-      handoff.pairingCode = normalizePairingCode(pairingCode);
-    }
     if (handoff.pairingCode && handoff.pairingCode !== pairingCode) {
       setPairingCode(handoff.pairingCode);
     }
