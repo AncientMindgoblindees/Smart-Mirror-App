@@ -115,6 +115,13 @@ export interface MirrorAuthPairingStartRequest {
   redirect_to?: string | null;
 }
 
+export interface MirrorBootstrapContext {
+  hardware_id: string;
+  hardware_token: string;
+  mirror_base_url?: string | null;
+  ws_url?: string | null;
+}
+
 export interface MirrorAuthPairingSession {
   pairing_id: string;
   provider: MirrorOAuthProvider | string;
@@ -126,6 +133,8 @@ export interface MirrorAuthPairingSession {
   oauth_url?: string | null;
   owner_user_uid?: string | null;
   owner_email?: string | null;
+  mirror_hardware_id?: string | null;
+  mirror_base_url?: string | null;
 }
 
 export interface MirrorAuthPairingRedeemRequest {
@@ -166,4 +175,5 @@ export interface MirrorAuthPairingTokenExchangeResponse {
   provider: MirrorOAuthProvider | string;
   user: MirrorSessionUser;
   replaced_session?: boolean;
+  mirror_context?: MirrorBootstrapContext | null;
 }

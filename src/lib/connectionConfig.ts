@@ -56,6 +56,18 @@ export function setMirrorWsUrl(url: string): void {
   try { localStorage.setItem(MIRROR_WS_STORAGE_KEY, url); } catch { /* ignore */ }
 }
 
+export function deriveMirrorWsUrl(base: string): string {
+  const trimmed = base.trim().replace(/\/$/, '');
+  if (!trimmed) return '';
+  if (trimmed.startsWith('https://')) {
+    return `wss://${trimmed.slice(8)}/ws/control`;
+  }
+  if (trimmed.startsWith('http://')) {
+    return `ws://${trimmed.slice(7)}/ws/control`;
+  }
+  return trimmed;
+}
+
 export function getMirrorHardwareId(): string | null {
   try {
     const stored = localStorage.getItem(MIRROR_HARDWARE_ID_STORAGE_KEY);
