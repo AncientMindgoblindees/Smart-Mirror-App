@@ -52,6 +52,7 @@ import {
   type MirrorAuthProviderStatus,
 } from './lib/mirrorApi';
 import {
+  consumeGoogleRedirectResult,
   ensureFirebaseAuthReady,
   signInWithFirebaseCustomToken,
   signInWithGoogle,
@@ -164,6 +165,60 @@ type PairingQueryState = {
   pairingCode: string;
 };
 
+const PENDING_PAIRING_HANDOFF_STORAGE_KEY = 'smart_mirror_pending_pairing_handoff';
+
+function normalizePairingCode(raw: string): string {
+  return raw.replace(/\s+/g, '').trim().toUpperCase();
+}
+
+function mergePairingState(
+  ...states: Array<Partial<PairingQueryState> | null | undefined>
+): PairingQueryState {
+  return states.reduce<PairingQueryState>(
+    (acc, state) => ({
+      pairingId: acc.pairingId || state?.pairingId?.trim() || '',
+      pairingCode: acc.pairingCode || normalizePairingCode(state?.pairingCode ?? ''),
+    }),
+    { pairingId: '', pairingCode: '' },
+  );
+}
+
+function readPendingPairingHandoff(): PairingQueryState {
+  if (typeof window === 'undefined') return { pairingId: '', pairingCode: '' };
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_PAIRING_HANDOFF_STORAGE_KEY);
+    if (!raw) return { pairingId: '', pairingCode: '' };
+    const parsed = JSON.parse(raw) as Partial<PairingQueryState>;
+    return mergePairingState(parsed);
+  } catch {
+    return { pairingId: '', pairingCode: '' };
+  }
+}
+
+function persistPendingPairingHandoff(state: Partial<PairingQueryState>): PairingQueryState {
+  const next = mergePairingState(state);
+  if (typeof window === 'undefined') return next;
+  if (!next.pairingId && !next.pairingCode) {
+    window.sessionStorage.removeItem(PENDING_PAIRING_HANDOFF_STORAGE_KEY);
+    return next;
+  }
+  window.sessionStorage.setItem(PENDING_PAIRING_HANDOFF_STORAGE_KEY, JSON.stringify(next));
+  return next;
+}
+
+function clearPendingPairingHandoff(): void {
+  if (typeof window === 'undefined') return;
+  window.sessionStorage.removeItem(PENDING_PAIRING_HANDOFF_STORAGE_KEY);
+}
+
+function hasPairingState(state: PairingQueryState): boolean {
+  return Boolean(state.pairingId || state.pairingCode);
+}
+
+function isSupportedMirrorProvider(provider: string | null | undefined): provider is MirrorOAuthProvider {
+  return provider?.trim().toLowerCase() === 'google';
+}
+
 function readDeviceSettingsDraft(): PublicMirrorSettingsDraft {
   return {
     mirrorHttpBase: getMirrorHttpBase(),
@@ -195,7 +250,7 @@ function readPairingQueryFromWindow(): PairingQueryState {
   const search = new URLSearchParams(window.location.search);
   return {
     pairingId: search.get('pairing_id')?.trim() ?? '',
-    pairingCode: search.get('pairing_code')?.trim().toUpperCase() ?? '',
+    pairingCode: normalizePairingCode(search.get('pairing_code') ?? ''),
   };
 }
 
@@ -211,6 +266,10 @@ function formatErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) return error.details || error.message;
   if (error instanceof Error) return error.message;
   return fallback;
+}
+
+function isFatalPairingError(error: unknown): boolean {
+  return error instanceof ApiError && [403, 404, 409].includes(error.status);
 }
 
 function formatRelativeExpiry(raw: string | null | undefined): string | undefined {
@@ -703,7 +762,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
     }
     try {
       const list = await mirrorAuthProviders(base);
-      setMirrorAuthList(list);
+      setMirrorAuthList(list.filter((row) => isSupportedMirrorProvider(String(row.provider))));
     } catch {
       setMirrorAuthList([]);
     }
@@ -1198,17 +1257,27 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
   const isAdmin = mirrorSession?.role === 'admin';
   const currentUserProviders = useMemo(
     () =>
-      mirrorAuthList.filter((row) =>
-        row.owner_user_uid
-          ? row.owner_user_uid === firebaseUser.uid
-          : row.is_current_user_owner !== false
+      mirrorAuthList.filter(
+        (row) =>
+          isSupportedMirrorProvider(String(row.provider))
+          && (
+            row.owner_user_uid
+              ? row.owner_user_uid === firebaseUser.uid
+              : row.is_current_user_owner !== false
+          ),
       ),
     [firebaseUser.uid, mirrorAuthList],
   );
   const managedProviders = useMemo(
     () =>
-      mirrorAuthList.filter((row) =>
-        row.owner_user_uid ? row.owner_user_uid !== firebaseUser.uid : row.is_current_user_owner === false
+      mirrorAuthList.filter(
+        (row) =>
+          isSupportedMirrorProvider(String(row.provider))
+          && (
+            row.owner_user_uid
+              ? row.owner_user_uid !== firebaseUser.uid
+              : row.is_current_user_owner === false
+          ),
       ),
     [firebaseUser.uid, mirrorAuthList],
   );
@@ -1247,6 +1316,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
         if (!ready.custom_token_ready) {
           toast.success('Account linked securely.');
           clearPairingQueryFromWindow();
+          clearPendingPairingHandoff();
           await refreshMirrorSecurityState();
           await loadCalendarPreview();
           setActivePairing(null);
@@ -1266,11 +1336,13 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 
         if (exchange.user.uid !== firebaseUser.uid) {
           await signInWithFirebaseCustomToken(exchange.custom_token);
+          clearPendingPairingHandoff();
           toast.success(`Signed in as ${exchange.user.email ?? 'new user'} through secure pairing.`);
           return;
         }
 
         toast.success('Account linked securely.');
+        clearPendingPairingHandoff();
         setPendingReplacement(null);
         setActivePairing(null);
         await refreshMirrorSecurityState();
@@ -1331,8 +1403,10 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 
   useEffect(() => {
     const query = readPairingQueryFromWindow();
-    const marker = `${query.pairingId}:${query.pairingCode}`;
-    if (!query.pairingId && !query.pairingCode) return;
+    const stored = readPendingPairingHandoff();
+    const pending = mergePairingState(query, stored);
+    const marker = `${pending.pairingId}:${pending.pairingCode}`;
+    if (!hasPairingState(pending)) return;
     if (handledPairingQueryRef.current === marker) return;
     handledPairingQueryRef.current = marker;
 
@@ -1345,13 +1419,13 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 
       try {
         setPairingBusy(true);
-        let pairingId = query.pairingId;
-        if (query.pairingCode) {
-          const redeemed = await mirrorRedeemAuthPairing(base, { pairing_code: query.pairingCode });
+        let pairingId = pending.pairingId;
+        if (pending.pairingCode) {
+          const redeemed = await mirrorRedeemAuthPairing(base, { pairing_code: pending.pairingCode });
           pairingId = redeemed.pairing_id;
           setActivePairing({
             ...(redeemed as MirrorAuthPairingStatusResponse),
-            pairing_code: query.pairingCode,
+            pairing_code: pending.pairingCode,
           });
         }
         if (!pairingId) {
@@ -1361,6 +1435,10 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
         await completePairingFlow(pairingId);
       } catch (error) {
         setPairingBusy(false);
+        if (isFatalPairingError(error)) {
+          clearPairingQueryFromWindow();
+          clearPendingPairingHandoff();
+        }
         toast.error(formatErrorMessage(error, 'Could not redeem the pairing redirect.'));
       }
     })();
@@ -1390,6 +1468,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
       if ('custom_token' in pending) {
         clearPairingQueryFromWindow();
         await signInWithFirebaseCustomToken(pending.custom_token);
+        clearPendingPairingHandoff();
         toast.success(`Signed in as ${pending.user.email ?? 'new user'} through secure pairing.`);
       } else {
         await completePairingFlow(pending.pairing_id, true);
@@ -1974,22 +2053,14 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
               <p className="text-xs text-white/40">
                 Starts a secure pairing session for the currently signed-in Firebase user. Your mirror may show a QR code or pairing code.
               </p>
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex flex-col gap-2">
                 <button
                   type="button"
                   disabled={pairingBusy}
-                  className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
+                  className="bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
                   onClick={() => void startProviderPairing('google', 'mirror')}
                 >
                   Google (QR on mirror)
-                </button>
-                <button
-                  type="button"
-                  disabled={pairingBusy}
-                  className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
-                  onClick={() => void startProviderPairing('microsoft', 'mirror')}
-                >
-                  Microsoft (QR on mirror)
                 </button>
               </div>
               {activePairing ? (
@@ -2004,22 +2075,14 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
               <p className="text-xs text-white/40">
                 Opens provider auth in your browser and returns with a pairing session bound to this Firebase user.
               </p>
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex flex-col gap-2">
                 <button
                   type="button"
                   disabled={pairingBusy}
-                  className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
+                  className="bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
                   onClick={() => void startProviderPairing('google', 'browser')}
                 >
                   Google in browser
-                </button>
-                <button
-                  type="button"
-                  disabled={pairingBusy}
-                  className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
-                  onClick={() => void startProviderPairing('microsoft', 'browser')}
-                >
-                  Microsoft in browser
                 </button>
               </div>
             </GlassCard>
@@ -2031,7 +2094,7 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
               ) : mirrorSessionError ? (
                 <p className="text-xs text-amber-200/90">{mirrorSessionError}</p>
               ) : mirrorAuthList.length === 0 ? (
-                <p className="text-xs text-white/35">Could not load status. Check mirror HTTP base in Settings.</p>
+                <p className="text-xs text-white/35">No supported Google provider links are active for this mirror yet.</p>
               ) : (
                 <div className="space-y-4">
                   <div className="space-y-2">
@@ -2594,14 +2657,18 @@ function AuthenticatedApp({ firebaseUser, onSignOut }: AuthenticatedAppProps) {
 export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
+  const [redirectResultResolved, setRedirectResultResolved] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
   const [pairingBusy, setPairingBusy] = useState(false);
-  const [pairingCode, setPairingCode] = useState(() => readPairingQueryFromWindow().pairingCode);
+  const [pairingCode, setPairingCode] = useState(
+    () => mergePairingState(readPairingQueryFromWindow(), readPendingPairingHandoff()).pairingCode,
+  );
   const [notice, setNotice] = useState<PrivateLoginGateNotice | null>(null);
   const [pendingPairing, setPendingPairing] = useState<PrivateLoginGatePendingPairing | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<PublicMirrorSettingsDraft>(() => readDeviceSettingsDraft());
   const [settingsStatus, setSettingsStatus] = useState<PublicMirrorSettingsStatus | null>(null);
+  const signedOutPairingMarkerRef = useRef('');
 
   useEffect(() => {
     void ensureFirebaseAuthReady().catch(() => undefined);
@@ -2616,6 +2683,39 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void consumeGoogleRedirectResult()
+      .catch((error) => {
+        if (cancelled) return;
+        setNotice({
+          tone: 'danger',
+          title: 'Google sign-in failed',
+          detail: formatErrorMessage(error, 'Could not complete Google sign-in.'),
+        });
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRedirectResultResolved(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    signedOutPairingMarkerRef.current = '';
+  }, [settingsDraft.mirrorHttpBase]);
+
+  const buildPairingHandoff = useCallback(
+    (overrides?: Partial<PairingQueryState>): PairingQueryState =>
+      mergePairingState(readPairingQueryFromWindow(), readPendingPairingHandoff(), {
+        pairingCode,
+      }, overrides),
+    [pairingCode],
+  );
+
   const handleSaveSettings = useCallback(() => {
     const next = persistDeviceSettingsDraft(settingsDraft);
     setSettingsDraft(next);
@@ -2627,7 +2727,20 @@ export default function App() {
     setShowSettings(false);
   }, [settingsDraft]);
 
-  const handleGoogleSignIn = useCallback(async () => {
+  const handleGoogleSignIn = useCallback(async (handoff?: Partial<PairingQueryState>) => {
+    const nextHandoff = buildPairingHandoff(handoff);
+    if (hasPairingState(nextHandoff)) {
+      persistPendingPairingHandoff(nextHandoff);
+      if (nextHandoff.pairingCode) {
+        setPendingPairing(
+          buildPendingPairingView({
+            provider: 'google',
+            pairing_code: nextHandoff.pairingCode,
+            status: nextHandoff.pairingId ? 'awaiting_app' : 'awaiting_oauth',
+          }),
+        );
+      }
+    }
     setSignInBusy(true);
     setNotice(null);
     try {
@@ -2641,7 +2754,54 @@ export default function App() {
     } finally {
       setSignInBusy(false);
     }
-  }, []);
+  }, [buildPairingHandoff]);
+
+  const exchangeSignedOutPairing = useCallback(
+    async (handoff: PairingQueryState) => {
+      const base = settingsDraft.mirrorHttpBase.trim();
+      if (!base) {
+        setNotice({
+          tone: 'warning',
+          title: 'Mirror settings are required',
+          detail: 'Set the mirror HTTP base before finishing a pairing redirect on this device.',
+        });
+        setShowSettings(true);
+        return;
+      }
+      if (!handoff.pairingId || !handoff.pairingCode) return;
+
+      setPairingBusy(true);
+      setNotice(null);
+      setPendingPairing(
+        buildPendingPairingView({
+          provider: 'google',
+          pairing_code: handoff.pairingCode,
+          status: 'authorized',
+        }),
+      );
+      try {
+        const exchange = await mirrorExchangeAuthPairingToken(base, handoff.pairingId, {
+          pairing_code: handoff.pairingCode,
+        });
+        await signInWithFirebaseCustomToken(exchange.custom_token);
+        clearPairingQueryFromWindow();
+        clearPendingPairingHandoff();
+      } catch (error) {
+        if (isFatalPairingError(error)) {
+          clearPairingQueryFromWindow();
+          clearPendingPairingHandoff();
+        }
+        setNotice({
+          tone: 'danger',
+          title: 'Could not finish pairing',
+          detail: formatErrorMessage(error, 'The mirror pairing could not be completed on this device.'),
+        });
+      } finally {
+        setPairingBusy(false);
+      }
+    },
+    [settingsDraft.mirrorHttpBase],
+  );
 
   const handleRedeemPairingCode = useCallback(async () => {
     const base = settingsDraft.mirrorHttpBase.trim();
@@ -2656,54 +2816,60 @@ export default function App() {
     }
     if (!pairingCode.trim()) return;
 
-    const normalizedCode = pairingCode.trim().toUpperCase();
-    setPairingBusy(true);
-    setNotice(null);
-    try {
-      const redeemed = await mirrorRedeemAuthPairing(base, { pairing_code: normalizedCode });
-      setPendingPairing(
-        buildPendingPairingView({
-          ...redeemed,
-          pairing_code: normalizedCode,
-        }),
-      );
-      const finalized = await mirrorFinalizeAuthPairing(base, redeemed.pairing_id);
-      const ready = finalized.custom_token_ready
-        ? finalized
-        : await waitForPairingReady(base, redeemed.pairing_id, (status) => {
-            setPendingPairing(
-              buildPendingPairingView({
-                ...status,
-                pairing_code: status.pairing_code ?? normalizedCode,
-              }),
-            );
-          });
+    const handoff = buildPairingHandoff({
+      pairingCode: normalizePairingCode(pairingCode),
+    });
 
-      if (ready.status === 'expired') {
-        throw new Error('This pairing code expired. Start again from the mirror and redeem the new code.');
-      }
-      if (ready.status === 'error' || !ready.custom_token_ready) {
-        throw new Error(ready.error_message ?? 'The pairing completed, but Firebase sign-in is not ready yet.');
-      }
-
-      const exchange = await mirrorExchangeAuthPairingToken(base, redeemed.pairing_id);
-      await signInWithFirebaseCustomToken(exchange.custom_token);
-      clearPairingQueryFromWindow();
-      setNotice({
-        tone: 'success',
-        title: 'Signed in securely',
-        detail: `Connected as ${exchange.user.email ?? 'your mirror account'}.`,
-      });
-    } catch (error) {
-      setNotice({
-        tone: 'danger',
-        title: 'Could not redeem pairing code',
-        detail: formatErrorMessage(error, 'The mirror pairing could not be completed.'),
-      });
-    } finally {
-      setPairingBusy(false);
+    persistPendingPairingHandoff(handoff);
+    if (handoff.pairingId) {
+      await exchangeSignedOutPairing(handoff);
+      return;
     }
-  }, [pairingCode, settingsDraft.mirrorHttpBase]);
+
+    setNotice({
+      tone: 'neutral',
+      title: 'Google sign-in required first',
+      detail: 'This backend redeems manual pairing codes after Firebase sign-in. Continue with Google and the app will finish linking when you return.',
+    });
+    await handleGoogleSignIn(handoff);
+  }, [buildPairingHandoff, exchangeSignedOutPairing, handleGoogleSignIn, pairingCode, settingsDraft.mirrorHttpBase]);
+
+  useEffect(() => {
+    if (!redirectResultResolved || firebaseUser) return;
+
+    const handoff = buildPairingHandoff();
+    if (!handoff.pairingCode && pairingCode) {
+      handoff.pairingCode = normalizePairingCode(pairingCode);
+    }
+    if (handoff.pairingCode && handoff.pairingCode !== pairingCode) {
+      setPairingCode(handoff.pairingCode);
+    }
+    if (!hasPairingState(handoff)) return;
+
+    const marker = `${handoff.pairingId}:${handoff.pairingCode}`;
+    if (signedOutPairingMarkerRef.current === marker) return;
+    signedOutPairingMarkerRef.current = marker;
+
+    persistPendingPairingHandoff(handoff);
+    setPendingPairing(
+      buildPendingPairingView({
+        provider: 'google',
+        pairing_code: handoff.pairingCode || undefined,
+        status: handoff.pairingId && handoff.pairingCode ? 'authorized' : 'awaiting_oauth',
+      }),
+    );
+
+    if (handoff.pairingId && handoff.pairingCode) {
+      void exchangeSignedOutPairing(handoff);
+      return;
+    }
+
+    setNotice({
+      tone: 'neutral',
+      title: 'Finish with Google on this device',
+      detail: 'This pairing needs a Firebase session before it can be redeemed here. Continue with Google and the app will complete the backend finalize flow after sign-in.',
+    });
+  }, [buildPairingHandoff, exchangeSignedOutPairing, firebaseUser, pairingCode, redirectResultResolved]);
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -2712,6 +2878,7 @@ export default function App() {
       }
       await signOutFromFirebase();
       clearPairingQueryFromWindow();
+      clearPendingPairingHandoff();
       setPairingCode('');
       setPendingPairing(null);
       setNotice({
@@ -2733,12 +2900,14 @@ export default function App() {
     [settingsDraft.hardwareId, settingsDraft.mirrorHttpBase],
   );
 
-  if (!authResolved || !firebaseUser) {
+  const authReady = authResolved && redirectResultResolved;
+
+  if (!authReady || !firebaseUser) {
     return (
       <>
         <Toaster theme="dark" position="top-center" />
         <PrivateLoginGate
-          mode={authResolved ? 'signed_out' : 'loading'}
+          mode={authReady ? 'signed_out' : 'loading'}
           pairingCode={pairingCode}
           onPairingCodeChange={setPairingCode}
           onRedeemPairingCode={() => void handleRedeemPairingCode()}

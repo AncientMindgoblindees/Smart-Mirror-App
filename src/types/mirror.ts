@@ -1,6 +1,6 @@
 /** Matches Smart-Mirror FastAPI widget JSON. */
 
-export type MirrorOAuthProvider = 'google' | 'microsoft';
+export type MirrorOAuthProvider = 'google';
 export type MirrorHouseholdRole = 'admin' | 'member';
 export type MirrorAuthPairingIntent = 'link_provider' | 'sign_in';
 export type MirrorAuthPairingStatus =
@@ -156,6 +156,7 @@ export interface MirrorAuthPairingFinalizeRequest {
 }
 
 export interface MirrorAuthPairingTokenExchangeRequest {
+  pairing_code?: string | null;
   replace_current_session?: boolean;
 }
 
