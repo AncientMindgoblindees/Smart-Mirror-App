@@ -1,7 +1,8 @@
 const MIRROR_HTTP_STORAGE_KEY = 'mirror_http_base';
 const MIRROR_WS_STORAGE_KEY = 'mirror_ws_url';
-const MIRROR_HARDWARE_ID_KEY = 'mirror_hardware_id';
-const MIRROR_USER_ID_KEY = 'mirror_user_id';
+const MIRROR_HARDWARE_ID_STORAGE_KEY = 'mirror_hardware_id';
+const MIRROR_HARDWARE_TOKEN_STORAGE_KEY = 'mirror_hardware_token';
+const MIRROR_ACTIVE_USER_ID_STORAGE_KEY = 'mirror_active_user_id';
 
 export type MirrorEnv = 'production' | 'development';
 
@@ -40,23 +41,11 @@ export function getMirrorHttpBase(): string {
 }
 
 export function getMirrorWsUrl(): string {
-  const identity = getMirrorIdentityContext();
-  const withIdentity = (value: string): string => {
-    if (!identity) return value;
-    try {
-      const url = new URL(value);
-      url.searchParams.set('hardware_id', identity.hardwareId);
-      url.searchParams.set('user_id', identity.userId);
-      return url.toString();
-    } catch {
-      return value;
-    }
-  };
   try {
     const stored = localStorage.getItem(MIRROR_WS_STORAGE_KEY);
-    if (stored?.trim()) return withIdentity(stored.trim());
+    if (stored?.trim()) return stored.trim();
   } catch { /* ignore */ }
-  return withIdentity(ENV_DEFAULTS[detectEnv()].ws);
+  return ENV_DEFAULTS[detectEnv()].ws;
 }
 
 export function setMirrorHttpBase(base: string): void {
@@ -67,27 +56,59 @@ export function setMirrorWsUrl(url: string): void {
   try { localStorage.setItem(MIRROR_WS_STORAGE_KEY, url); } catch { /* ignore */ }
 }
 
-export type MirrorIdentityContext = {
-  hardwareId: string;
-  userId: string;
-};
-
-export function getMirrorIdentityContext(): MirrorIdentityContext | null {
+export function getMirrorHardwareId(): string | null {
   try {
-    const hardwareId = localStorage.getItem(MIRROR_HARDWARE_ID_KEY)?.trim() || '';
-    const userId = localStorage.getItem(MIRROR_USER_ID_KEY)?.trim() || '';
-    if (!hardwareId || !userId) return null;
-    return { hardwareId, userId };
+    const stored = localStorage.getItem(MIRROR_HARDWARE_ID_STORAGE_KEY);
+    return stored?.trim() || null;
   } catch {
     return null;
   }
 }
 
-export function setMirrorIdentityContext(ctx: { hardwareId?: string; userId?: string }): void {
+export function setMirrorHardwareId(hardwareId: string): void {
   try {
-    if (ctx.hardwareId !== undefined) localStorage.setItem(MIRROR_HARDWARE_ID_KEY, ctx.hardwareId);
-    if (ctx.userId !== undefined) localStorage.setItem(MIRROR_USER_ID_KEY, ctx.userId);
+    if (!hardwareId.trim()) {
+      localStorage.removeItem(MIRROR_HARDWARE_ID_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(MIRROR_HARDWARE_ID_STORAGE_KEY, hardwareId.trim());
+  } catch { /* ignore */ }
+}
+
+export function getMirrorHardwareToken(): string | null {
+  try {
+    const stored = localStorage.getItem(MIRROR_HARDWARE_TOKEN_STORAGE_KEY);
+    return stored?.trim() || null;
   } catch {
-    /* ignore */
+    return null;
   }
 }
+
+export function setMirrorHardwareToken(token: string): void {
+  try {
+    if (!token.trim()) {
+      localStorage.removeItem(MIRROR_HARDWARE_TOKEN_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(MIRROR_HARDWARE_TOKEN_STORAGE_KEY, token.trim());
+  } catch { /* ignore */ }
+}
+
+export function clearMirrorLegacyUserId(): void {
+  try {
+    localStorage.removeItem(MIRROR_ACTIVE_USER_ID_STORAGE_KEY);
+  } catch { /* ignore */ }
+}
+
+export function buildScopedWsUrl(baseWsUrl: string): string {
+  const hardwareId = getMirrorHardwareId();
+  if (!hardwareId) return baseWsUrl;
+  try {
+    const url = new URL(baseWsUrl);
+    if (hardwareId) url.searchParams.set('hardware_id', hardwareId);
+    return url.toString();
+  } catch {
+    return baseWsUrl;
+  }
+}
+
