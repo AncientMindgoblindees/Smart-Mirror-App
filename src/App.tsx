@@ -2,8 +2,6 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { 
   Clock, 
   Cloud, 
-  Calendar, 
-  ListTodo, 
   Camera, 
   Shirt, 
   Upload, 
@@ -39,13 +37,11 @@ import {
   mirrorAuthStartDeviceLogin,
   mirrorAuthLogout,
   mirrorOAuthWebStartUrl,
-  mirrorGetCalendarEvents,
-  mirrorGetCalendarTasks,
   type MirrorAuthProviderStatus,
 } from './lib/mirrorApi';
 import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
-import type { CalendarEventItem, WidgetConfigOut } from './types/mirror';
+import type { WidgetConfigOut } from './types/mirror';
 import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
 import {
@@ -415,11 +411,6 @@ export default function App() {
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
   const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
-  const [calendarEventsPreview, setCalendarEventsPreview] = useState<CalendarEventItem[]>([]);
-  const [calendarTasksPreview, setCalendarTasksPreview] = useState<CalendarEventItem[]>([]);
-  const [calendarPreviewProviders, setCalendarPreviewProviders] = useState<string[]>([]);
-  const [calendarPreviewLastSync, setCalendarPreviewLastSync] = useState<string | null>(null);
-  const [calendarPreviewLoading, setCalendarPreviewLoading] = useState(false);
   const remoteRefreshInFlightRef = useRef(false);
   const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
 
@@ -518,39 +509,14 @@ export default function App() {
     }
   }, []);
 
-  const loadCalendarPreview = useCallback(async () => {
-    const base = mirrorHttpRef.current.trim();
-    if (!base) return;
-    setCalendarPreviewLoading(true);
-    try {
-      const [eventsRes, tasksRes] = await Promise.all([
-        mirrorGetCalendarEvents(base, { days: 7 }),
-        mirrorGetCalendarTasks(base),
-      ]);
-      setCalendarEventsPreview(eventsRes.events.slice(0, 4));
-      setCalendarTasksPreview(tasksRes.tasks.slice(0, 4));
-      setCalendarPreviewProviders(Array.from(new Set([...eventsRes.providers, ...tasksRes.providers])));
-      setCalendarPreviewLastSync(eventsRes.last_sync ?? tasksRes.last_sync ?? null);
-    } catch {
-      setCalendarEventsPreview([]);
-      setCalendarTasksPreview([]);
-      setCalendarPreviewProviders([]);
-      setCalendarPreviewLastSync(null);
-    } finally {
-      setCalendarPreviewLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (activeTab !== 'accounts') return;
     void loadMirrorAuth();
-    void loadCalendarPreview();
     const id = window.setInterval(() => {
       void loadMirrorAuth();
-      void loadCalendarPreview();
     }, 8000);
     return () => clearInterval(id);
-  }, [activeTab, loadMirrorAuth, loadCalendarPreview]);
+  }, [activeTab, loadMirrorAuth]);
 
   const schedulePushLayoutToMirror = useCallback(
     (list: Widget[]) => {
@@ -1439,29 +1405,15 @@ export default function App() {
                 >
                   Google (QR on mirror)
                 </button>
-                <button
-                  type="button"
-                  className="flex-1 bg-white/10 border border-white/15 rounded-xl py-3 text-sm hover:bg-white/15 transition-colors"
-                  onClick={async () => {
-                    try {
-                      await mirrorAuthStartDeviceLogin(mirrorHttpBase, 'microsoft');
-                      toast.success('Check the mirror for a QR code.');
-                    } catch (e) {
-                      toast.error(e instanceof Error ? e.message : 'Failed to start Microsoft login');
-                    }
-                  }}
-                >
-                  Microsoft (QR on mirror)
-                </button>
               </div>
             </GlassCard>
 
             <GlassCard className="space-y-4">
               <h3 className="text-sm font-medium text-white/90">Sign in on this device</h3>
               <p className="text-xs text-white/40">
-                Opens your browser to Google or Microsoft, then returns to the mirror. Use when you prefer not to use the mirror screen.
+                Opens your browser to Google, then returns to the mirror. Use when you prefer not to use the mirror screen.
               </p>
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex gap-2">
                 <button
                   type="button"
                   className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
@@ -1470,15 +1422,6 @@ export default function App() {
                   }}
                 >
                   Google in browser
-                </button>
-                <button
-                  type="button"
-                  className="flex-1 bg-white text-black rounded-xl py-3 text-sm font-medium hover:bg-white/90 transition-colors"
-                  onClick={() => {
-                    window.location.href = mirrorOAuthWebStartUrl(mirrorHttpBase, 'microsoft');
-                  }}
-                >
-                  Microsoft in browser
                 </button>
               </div>
             </GlassCard>
@@ -1518,39 +1461,6 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
-              )}
-            </GlassCard>
-            <GlassCard className="space-y-3">
-              <h3 className="text-sm font-medium text-white/90">Calendar + tasks preview</h3>
-              {calendarPreviewLoading ? (
-                <p className="text-xs text-white/35">Loading feed preview...</p>
-              ) : (
-                <>
-                  <p className="text-xs text-white/45">
-                    Events: {calendarEventsPreview.length} · Tasks: {calendarTasksPreview.length}
-                  </p>
-                  <p className="text-xs text-white/35">
-                    Providers: {calendarPreviewProviders.length ? calendarPreviewProviders.join(', ') : 'none'}
-                  </p>
-                  <p className="text-xs text-white/30">
-                    Last sync: {calendarPreviewLastSync ?? 'unknown'}
-                  </p>
-                  <div className="space-y-1">
-                    {calendarEventsPreview.map((event) => (
-                      <p key={`evt-${event.id}`} className="text-xs text-white/60 truncate">
-                        Event: {event.title}
-                      </p>
-                    ))}
-                    {calendarTasksPreview.map((task) => (
-                      <p key={`task-${task.id}`} className="text-xs text-white/60 truncate">
-                        Task: {task.title}
-                      </p>
-                    ))}
-                    {calendarEventsPreview.length === 0 && calendarTasksPreview.length === 0 && (
-                      <p className="text-xs text-white/35">No preview data available.</p>
-                    )}
-                  </div>
-                </>
               )}
             </GlassCard>
           </section>

@@ -11,8 +11,6 @@ const mirrorApiMocks = vi.hoisted(() => ({
   mirrorAuthStartDeviceLogin: vi.fn(),
   mirrorAuthLogout: vi.fn(),
   mirrorOAuthWebStartUrl: vi.fn(),
-  mirrorGetCalendarEvents: vi.fn(),
-  mirrorGetCalendarTasks: vi.fn(),
 }));
 
 const wardrobeApiMocks = vi.hoisted(() => ({
@@ -159,16 +157,6 @@ beforeEach(() => {
   mirrorApiMocks.mirrorAuthStartDeviceLogin.mockResolvedValue(undefined);
   mirrorApiMocks.mirrorAuthLogout.mockResolvedValue(undefined);
   mirrorApiMocks.mirrorOAuthWebStartUrl.mockReturnValue('http://mirror.test/oauth/start');
-  mirrorApiMocks.mirrorGetCalendarEvents.mockResolvedValue({
-    events: [],
-    providers: [],
-    last_sync: null,
-  });
-  mirrorApiMocks.mirrorGetCalendarTasks.mockResolvedValue({
-    tasks: [],
-    providers: [],
-    last_sync: null,
-  });
 
   wardrobeApiMocks.listClothingItems.mockResolvedValue([]);
   wardrobeApiMocks.createClothingWithImage.mockReset();
