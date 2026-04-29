@@ -1,4 +1,4 @@
-import { getMirrorWsUrl } from './connectionConfig';
+import { getMirrorApiToken, getMirrorWsUrl, withAuthToken } from './connectionConfig';
 import {
   createDevicePairEnvelope,
   createSessionId,
@@ -26,16 +26,28 @@ export class MirrorConnectionManager {
   private readonly sessionId: string;
   private events: ConnectionManagerEvents;
   private wsUrl: string;
+  private authToken: string;
 
-  constructor(events: ConnectionManagerEvents, wsUrl?: string) {
+  constructor(events: ConnectionManagerEvents, wsUrl?: string, authToken?: string) {
     this.events = events;
     this.sessionId = createSessionId();
     this.wsUrl = wsUrl ?? getMirrorWsUrl();
+    this.authToken = (authToken ?? getMirrorApiToken()).trim();
   }
 
   setWsUrl(url: string): void {
     if (url === this.wsUrl) return;
     this.wsUrl = url;
+    if (this.status !== 'DISCONNECTED') {
+      this.disconnect();
+      this.connect();
+    }
+  }
+
+  setAuthToken(token: string): void {
+    const normalized = token.trim();
+    if (normalized === this.authToken) return;
+    this.authToken = normalized;
     if (this.status !== 'DISCONNECTED') {
       this.disconnect();
       this.connect();
@@ -61,7 +73,7 @@ export class MirrorConnectionManager {
     this.setStatus('CONNECTING');
 
     try {
-      const ws = new WebSocket(this.wsUrl);
+      const ws = new WebSocket(withAuthToken(this.wsUrl, this.authToken));
       this.ws = ws;
 
       ws.onopen = () => {

@@ -45,8 +45,10 @@ import type { WidgetConfigOut } from './types/mirror';
 import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
 import {
+  getMirrorApiToken,
   getMirrorHttpBase,
   getMirrorWsUrl,
+  setMirrorApiToken as persistMirrorApiToken,
   setMirrorHttpBase as persistMirrorHttpBase,
   setMirrorWsUrl as persistMirrorWsUrl,
 } from './lib/connectionConfig';
@@ -390,6 +392,7 @@ export default function App() {
     }
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [mirrorApiToken, setMirrorApiToken] = useState(() => getMirrorApiToken());
   const [wsConnected, setWsConnected] = useState(false);
   const connectionManagerRef = useRef<MirrorConnectionManager | null>(null);
   const [mirrorHttpBase, setMirrorHttpBase] = useState(() => {
@@ -410,6 +413,7 @@ export default function App() {
   mirrorHttpRef.current = mirrorHttpBase;
   const [mirrorHttpDraft, setMirrorHttpDraft] = useState(mirrorHttpBase);
   const [wsUrlDraft, setWsUrlDraft] = useState(wsUrl);
+  const [mirrorApiTokenDraft, setMirrorApiTokenDraft] = useState(mirrorApiToken);
   const [mirrorAuthList, setMirrorAuthList] = useState<MirrorAuthProviderStatus[]>([]);
   const remoteRefreshInFlightRef = useRef(false);
   const remoteRefreshTimerRef = useRef<number | undefined>(undefined);
@@ -433,7 +437,8 @@ export default function App() {
     if (!showSettings) return;
     setMirrorHttpDraft(mirrorHttpBase);
     setWsUrlDraft(wsUrl);
-  }, [showSettings, mirrorHttpBase, wsUrl]);
+    setMirrorApiTokenDraft(mirrorApiToken);
+  }, [showSettings, mirrorApiToken, mirrorHttpBase, wsUrl]);
 
   const loadLayoutFromMirror = useCallback(async (opts?: { silent?: boolean }) => {
     const configuredBase = mirrorHttpBase.trim();
@@ -605,11 +610,12 @@ export default function App() {
         onMessage: (d) => messageHandlerRef.current(d),
       },
       wsUrl,
+      mirrorApiToken,
     );
     connectionManagerRef.current = mgr;
     mgr.connect();
     return () => { mgr.dispose(); connectionManagerRef.current = null; };
-  }, [wsUrl]);
+  }, [mirrorApiToken, wsUrl]);
 
   const sendEnvelopeToMirror = (envelope: Record<string, unknown>) => {
     if (!connectionManagerRef.current?.send(envelope)) {
@@ -1066,16 +1072,34 @@ export default function App() {
                     e.g. ws://192.168.1.100:8002/ws/control — optional if HTTP base is set (layout via REST).
                   </p>
                 </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">
+                    Mirror API token
+                  </label>
+                  <input
+                    type="password"
+                    value={mirrorApiTokenDraft}
+                    onChange={(e) => setMirrorApiTokenDraft(e.target.value)}
+                    placeholder="Same value as MIRROR_API_TOKEN on mirror backend"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
+                  />
+                  <p className="text-[10px] text-white/20 leading-relaxed">
+                    Used for all /api requests and /ws/control auth.
+                  </p>
+                </div>
                 
                 <button 
                   type="button"
                   onClick={() => {
                     const v = mirrorHttpDraft.trim();
                     const nextWs = wsUrlDraft.trim();
+                    const nextToken = mirrorApiTokenDraft.trim();
                     persistMirrorHttpBase(v);
                     if (nextWs) persistMirrorWsUrl(nextWs);
+                    persistMirrorApiToken(nextToken);
                     setMirrorHttpBase(v);
                     if (nextWs) setWsUrl(nextWs);
+                    setMirrorApiToken(nextToken);
                     setShowSettings(false);
                   }}
                   className="w-full bg-white text-black py-3 rounded-xl font-medium hover:bg-white/90 transition-all active:scale-[0.98]"

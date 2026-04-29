@@ -1,3 +1,5 @@
+import { getMirrorApiToken } from '../lib/connectionConfig';
+
 export class ApiError extends Error {
   status: number;
   details?: string;
@@ -19,7 +21,12 @@ export async function requestJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const res = await fetch(`${trimBase(baseUrl)}${path}`, init);
+  const token = getMirrorApiToken();
+  const headers = new Headers(init.headers ?? {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  const res = await fetch(`${trimBase(baseUrl)}${path}`, { ...init, headers });
   if (!res.ok) {
     let details = '';
     try {
@@ -41,7 +48,12 @@ export async function requestVoid(
   path: string,
   init: RequestInit = {},
 ): Promise<void> {
-  const res = await fetch(`${trimBase(baseUrl)}${path}`, init);
+  const token = getMirrorApiToken();
+  const headers = new Headers(init.headers ?? {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  const res = await fetch(`${trimBase(baseUrl)}${path}`, { ...init, headers });
   if (!res.ok) {
     let details = '';
     try {

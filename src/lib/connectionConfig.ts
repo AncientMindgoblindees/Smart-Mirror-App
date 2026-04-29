@@ -1,5 +1,6 @@
 const MIRROR_HTTP_STORAGE_KEY = 'mirror_http_base';
 const MIRROR_WS_STORAGE_KEY = 'mirror_ws_url';
+const MIRROR_API_TOKEN_STORAGE_KEY = 'mirror_api_token';
 
 export type MirrorEnv = 'production' | 'development';
 
@@ -51,4 +52,29 @@ export function setMirrorHttpBase(base: string): void {
 
 export function setMirrorWsUrl(url: string): void {
   try { localStorage.setItem(MIRROR_WS_STORAGE_KEY, url); } catch { /* ignore */ }
+}
+
+export function getMirrorApiToken(): string {
+  try {
+    const stored = localStorage.getItem(MIRROR_API_TOKEN_STORAGE_KEY);
+    if (stored?.trim()) return stored.trim();
+  } catch { /* ignore */ }
+  const env = (import.meta as unknown as Record<string, Record<string, string>>).env;
+  return (env?.VITE_MIRROR_API_TOKEN ?? '').trim();
+}
+
+export function setMirrorApiToken(token: string): void {
+  try { localStorage.setItem(MIRROR_API_TOKEN_STORAGE_KEY, token); } catch { /* ignore */ }
+}
+
+export function withAuthToken(url: string, token: string): string {
+  const nextToken = token.trim();
+  if (!nextToken) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set('token', nextToken);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }

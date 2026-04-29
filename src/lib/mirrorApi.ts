@@ -6,6 +6,7 @@ import type {
 } from '../types/mirror';
 import { ApiError, requestJson, requestVoid, trimBase } from '../api/httpClient';
 import { routes } from '../api/routes';
+import { getMirrorApiToken } from './connectionConfig';
 
 export type MirrorAuthProviderStatus = {
   provider: string;
@@ -33,7 +34,16 @@ export async function mirrorAuthLogout(baseUrl: string, provider: string): Promi
 
 /** Full-page redirect URL for browser OAuth (sign in on this device). */
 export function mirrorOAuthWebStartUrl(baseUrl: string, provider: 'google' | 'microsoft'): string {
-  return `${trimBase(baseUrl)}${routes.oauthStart(provider)}`;
+  const raw = `${trimBase(baseUrl)}${routes.oauthStart(provider)}`;
+  const token = getMirrorApiToken();
+  if (!token) return raw;
+  try {
+    const url = new URL(raw);
+    url.searchParams.set('token', token);
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 export async function mirrorGetWidgets(baseUrl: string): Promise<WidgetConfigOut[]> {
