@@ -17,7 +17,6 @@ const wardrobeApiMocks = vi.hoisted(() => ({
   listClothingItems: vi.fn(),
   createClothingWithImage: vi.fn(),
   deleteClothingItem: vi.fn(),
-  generateOutfitTryOn: vi.fn(),
 }));
 
 const toastMocks = vi.hoisted(() => ({
@@ -87,14 +86,12 @@ vi.mock('./lib/connectionManager', () => ({
 }));
 
 vi.mock('./lib/connectionConfig', () => ({
+  getMirrorApiToken: () => 'test-token',
   getMirrorHttpBase: () => 'http://mirror.test',
   getMirrorWsUrl: () => 'ws://mirror.test/ws/control',
+  setMirrorApiToken: vi.fn(),
   setMirrorHttpBase: vi.fn(),
   setMirrorWsUrl: vi.fn(),
-}));
-
-vi.mock('./components/WidgetSummaryPanel', () => ({
-  WidgetSummaryPanel: () => <div>Widget Summary</div>,
 }));
 
 vi.mock('./components/ui/fluid-dropdown', () => ({
@@ -117,14 +114,9 @@ vi.mock('./components/ui/fluid-dropdown', () => ({
   ),
 }));
 
-vi.mock('./features/camera/cameraApi', () => ({
-  triggerMirrorCapture: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock('./features/wardrobe/useWardrobeActions', () => ({
   useWardrobeActions: () => ({
     notifyWardrobeUpdated: vi.fn(),
-    clearDeletedSelection: vi.fn(),
   }),
 }));
 
@@ -135,14 +127,6 @@ vi.mock('./features/wardrobe/clothingApi', () => ({
   listClothingItems: wardrobeApiMocks.listClothingItems,
   createClothingWithImage: wardrobeApiMocks.createClothingWithImage,
   deleteClothingItem: wardrobeApiMocks.deleteClothingItem,
-  generateOutfitTryOn: wardrobeApiMocks.generateOutfitTryOn,
-  outfitSlotForCategory: (category: string) => {
-    if (category === 'shirt') return 'shirt';
-    if (category === 'pants') return 'pants';
-    if (category === 'accessories') return 'accessories';
-    return null;
-  },
-  personImageLatestUrl: (base: string) => `${base}/api/tryon/person-image/latest`,
   primaryImageUrl: (item: { images?: Array<{ image_url: string }> | null }) =>
     item.images?.[0]?.image_url ?? null,
 }));
@@ -161,11 +145,6 @@ beforeEach(() => {
   wardrobeApiMocks.listClothingItems.mockResolvedValue([]);
   wardrobeApiMocks.createClothingWithImage.mockReset();
   wardrobeApiMocks.deleteClothingItem.mockResolvedValue(undefined);
-  wardrobeApiMocks.generateOutfitTryOn.mockResolvedValue({
-    status: 'complete',
-    generation_id: 'gen-1',
-    image_url: 'http://mirror.test/generated/gen-1.png',
-  });
 
   toastMocks.success.mockReset();
   toastMocks.error.mockReset();
@@ -174,17 +153,16 @@ beforeEach(() => {
 
 
 describe('App', () => {
-  it('renders the main companion sections and empty wardrobe state', async () => {
+  it('renders only the layout workspace by default', async () => {
     render(<App />);
 
-    expect(await screen.findByText(/No wardrobe items yet/i)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Wardrobe' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Pose Capture' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Outfit generation' })).toBeInTheDocument();
-    expect(screen.getByAltText('Latest person photo')).toHaveAttribute(
-      'src',
-      expect.stringContaining('http://mirror.test/api/tryon/person-image/latest'),
-    );
+    expect(await screen.findByRole('heading', { name: 'Mirror Screen' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Wardrobe' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/No wardrobe items yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Camera' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Outfit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Pose Capture' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Outfit generation' })).not.toBeInTheDocument();
   });
 
   it('renders existing wardrobe items from the mocked API', async () => {
@@ -199,10 +177,24 @@ describe('App', () => {
       },
     ]);
 
+    const user = userEvent.setup();
     render(<App />);
 
+    await user.click(screen.getByRole('button', { name: 'Wardrobe' }));
     expect(await screen.findByAltText('Blue Shirt')).toBeInTheDocument();
     expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Mirror Screen' })).not.toBeInTheDocument();
+  });
+
+  it('keeps connection diagnostics separate from layout and wardrobe', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Connection' }));
+
+    expect(screen.getByRole('heading', { name: 'Connection Diagnostics' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Mirror Screen' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Wardrobe' })).not.toBeInTheDocument();
   });
 
   it('opens the upload modal and adds a new clothing card', async () => {
@@ -218,6 +210,7 @@ describe('App', () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
 
+    await user.click(screen.getByRole('button', { name: 'Wardrobe' }));
     await screen.findByText(/No wardrobe items yet/i);
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement | null;
     expect(fileInput).not.toBeNull();

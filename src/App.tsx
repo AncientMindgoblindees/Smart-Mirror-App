@@ -2,15 +2,14 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { 
   Clock, 
   Cloud, 
-  Camera, 
   Shirt, 
   Upload, 
   GripVertical, 
   X,
   Check,
   Loader2,
+  RefreshCw,
   Settings,
-  Sparkles,
   Wifi,
   WifiOff,
   Trash2
@@ -39,7 +38,6 @@ import {
   mirrorOAuthWebStartUrl,
   type MirrorAuthProviderStatus,
 } from './lib/mirrorApi';
-import { WidgetSummaryPanel, type HttpSyncState } from './components/WidgetSummaryPanel';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
 import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
@@ -55,20 +53,27 @@ import {
 import { FluidDropdown } from './components/ui/fluid-dropdown';
 import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } from './lib/widgetSizePresets';
 import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
-import { triggerMirrorCapture } from './features/camera/cameraApi';
 import {
   CLOTHING_CATEGORIES,
   createClothingWithImage,
   deleteClothingItem,
-  generateOutfitTryOn,
   listClothingItems,
-  outfitSlotForCategory,
-  personImageLatestUrl,
   primaryImageUrl,
   type ClothingItem,
   type ClothingItemCreate,
 } from './features/wardrobe/clothingApi';
 import { useWardrobeActions } from './features/wardrobe/useWardrobeActions';
+
+type HttpSyncState = 'idle' | 'pulling' | 'pushing' | 'saved' | 'error';
+
+function layoutSyncLabel(mirrorHttpBase: string, httpSyncState: HttpSyncState): string {
+  if (!mirrorHttpBase.trim()) return 'Local layout';
+  if (httpSyncState === 'pulling') return 'Refreshing';
+  if (httpSyncState === 'pushing') return 'Saving';
+  if (httpSyncState === 'saved') return 'Synced';
+  if (httpSyncState === 'error') return 'Sync issue';
+  return 'Mirror sync';
+}
 
 function isLoopbackHost(host: string): boolean {
   const h = host.trim().toLowerCase();
@@ -352,7 +357,7 @@ const MirrorWidget = ({
 export default function App() {
   const sessionIdRef = useRef(createSessionId());
   const [activeTab, setActiveTab] = useState<
-    'layout' | 'camera' | 'wardrobe' | 'outfit' | 'connection' | 'accounts'
+    'layout' | 'wardrobe' | 'connection' | 'accounts'
   >('layout');
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
@@ -375,14 +380,6 @@ export default function App() {
     season: '',
     notes: '',
   });
-  const [outfitItems, setOutfitItems] = useState<ClothingItem[]>([]);
-  const [selectedShirt, setSelectedShirt] = useState<ClothingItem | null>(null);
-  const [selectedPants, setSelectedPants] = useState<ClothingItem | null>(null);
-  const [selectedAccessory, setSelectedAccessory] = useState<ClothingItem | null>(null);
-  const [personImageNonce, setPersonImageNonce] = useState(0);
-  const [isGeneratingOutfit, setIsGeneratingOutfit] = useState(false);
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [cameraLoading, setCameraLoading] = useState(false);
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
     try {
@@ -560,34 +557,6 @@ export default function App() {
     const type = data.type as string | undefined;
     if (type === 'DEVICE_CONNECTED') { toast.success('Paired with mirror'); return; }
     if (type === 'DEVICE_ERROR') { toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Pairing failed')); return; }
-    if (type === 'CAMERA_LOADING_STARTED') {
-      setCameraLoading(true);
-      setCountdown(null);
-      return;
-    }
-    if (type === 'CAMERA_LOADING_READY') {
-      setCameraLoading(false);
-      return;
-    }
-    if (type === 'CAMERA_COUNTDOWN_TICK') {
-      setCameraLoading(false);
-      const remaining = Number((data.payload as Record<string, unknown>)?.remaining);
-      if (Number.isFinite(remaining)) setCountdown(remaining);
-      return;
-    }
-    if (type === 'CAMERA_CAPTURED') {
-      setCameraLoading(false);
-      setCountdown(null);
-      setPersonImageNonce((n) => n + 1);
-      toast.success('Photo captured');
-      return;
-    }
-    if (type === 'CAMERA_ERROR') {
-      setCameraLoading(false);
-      setCountdown(null);
-      toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Camera error'));
-      return;
-    }
     if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
     if (type === WIDGETS_REMOTE_UPDATED_EVENT) {
       if (remoteRefreshTimerRef.current) {
@@ -622,7 +591,7 @@ export default function App() {
       toast.error('Mirror not connected');
     }
   };
-  const { notifyWardrobeUpdated, clearDeletedSelection } = useWardrobeActions(
+  const { notifyWardrobeUpdated } = useWardrobeActions(
     sessionIdRef.current,
     sendEnvelopeToMirror,
   );
@@ -633,29 +602,20 @@ export default function App() {
     sendEnvelopeToMirror(createWidgetsSyncEnvelope(mgr?.getSessionId() ?? sessionIdRef.current, widgetsToSync));
   }, []);
 
-  // --- Clothing API sync (wardrobe + outfit tabs) ---
+  // --- Clothing API sync (wardrobe uploads) ---
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const base = mirrorHttpBase.trim();
       if (!base) {
-        if (!cancelled) {
-          setWardrobe([]);
-          setOutfitItems([]);
-        }
+        if (!cancelled) setWardrobe([]);
         return;
       }
       try {
         const items = await listClothingItems(base, true);
-        if (!cancelled) {
-          setWardrobe(items);
-          setOutfitItems(items.filter((it) => primaryImageUrl(it)));
-        }
+        if (!cancelled) setWardrobe(items);
       } catch {
-        if (!cancelled) {
-          setWardrobe([]);
-          setOutfitItems([]);
-        }
+        if (!cancelled) setWardrobe([]);
       }
     })();
     return () => {
@@ -709,7 +669,6 @@ export default function App() {
         notes: uploadMeta.notes?.trim() || null,
       });
       setWardrobe((prev) => [item, ...prev]);
-      setOutfitItems((prev) => (primaryImageUrl(item) ? [item, ...prev] : prev));
       toast.success('Item added to wardrobe');
       setUploadModalOpen(false);
       setPendingUploadFile(null);
@@ -727,62 +686,10 @@ export default function App() {
       if (!base) return;
       await deleteClothingItem(base, id);
       setWardrobe((prev) => prev.filter((item) => item.id !== id));
-      setOutfitItems((prev) => prev.filter((item) => item.id !== id));
-      clearDeletedSelection(
-        id,
-        { shirt: selectedShirt, pants: selectedPants, accessory: selectedAccessory },
-        {
-          setShirt: setSelectedShirt,
-          setPants: setSelectedPants,
-          setAccessory: setSelectedAccessory,
-        },
-      );
       toast.success('Item removed');
       notifyWardrobeUpdated();
     } catch {
       toast.error('Delete failed');
-    }
-  };
-
-  const itemsForSlot = (slot: 'shirt' | 'pants' | 'accessories') =>
-    outfitItems.filter((it) => outfitSlotForCategory(it.category) === slot);
-
-  const randomizeOutfit = () => {
-    const pick = (slot: 'shirt' | 'pants' | 'accessories') => {
-      const pool = itemsForSlot(slot);
-      if (!pool.length) return null;
-      return pool[Math.floor(Math.random() * pool.length)] ?? null;
-    };
-    setSelectedShirt(pick('shirt'));
-    setSelectedPants(pick('pants'));
-    setSelectedAccessory(pick('accessories'));
-  };
-
-  const submitOutfitTryOn = async () => {
-    const base = mirrorHttpBase.trim();
-    if (!base) {
-      toast.error('Set Mirror HTTP base');
-      return;
-    }
-    const ids: number[] = [];
-    for (const it of [selectedShirt, selectedPants, selectedAccessory]) {
-      if (!it) continue;
-      const url = primaryImageUrl(it);
-      const img = it.images?.find((i) => i.image_url === url) ?? it.images?.[0];
-      if (img) ids.push(img.id);
-    }
-    if (!ids.length) {
-      toast.error('Select at least one clothing item');
-      return;
-    }
-    setIsGeneratingOutfit(true);
-    try {
-      await generateOutfitTryOn(base, ids);
-      toast.success('Try-on sent to mirror');
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Try-on failed');
-    } finally {
-      setIsGeneratingOutfit(false);
     }
   };
 
@@ -935,25 +842,6 @@ export default function App() {
     toast.success(`Added “${t.label}”`);
   };
 
-  // --- Camera Trigger ---
-  const triggerCapture = async () => {
-    const base = mirrorHttpBase.trim();
-    if (!base) {
-      toast.error('Set Mirror HTTP base to trigger camera capture');
-      return;
-    }
-    try {
-      setCameraLoading(true);
-      setCountdown(null);
-      await triggerMirrorCapture(base, sessionIdRef.current);
-      toast.success('Capture request sent');
-    } catch {
-      setCameraLoading(false);
-      setCountdown(null);
-      toast.error('Could not trigger capture');
-    }
-  };
-
   return (
     <div className="min-h-screen bg-black text-white p-6 font-[var(--font-sans)] selection:bg-white/20 relative overflow-hidden">
       <div className="fixed inset-0 pointer-events-none z-0">
@@ -992,9 +880,7 @@ export default function App() {
         <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.04] backdrop-blur-sm p-1 gap-0.5 shadow-[0_4px_16px_rgba(0,0,0,0.2)]">
           {[
             { id: 'layout', label: 'Layout' },
-            { id: 'camera', label: 'Camera' },
             { id: 'wardrobe', label: 'Wardrobe' },
-            { id: 'outfit', label: 'Outfit' },
             { id: 'accounts', label: 'Accounts' },
             { id: 'connection', label: 'Connection' },
           ].map((tab) => (
@@ -1488,12 +1374,8 @@ export default function App() {
               )}
             </GlassCard>
           </section>
-        ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
-          
-          {/* Left Column: Mirror Canvas */}
-          {(activeTab === 'layout' || activeTab === 'connection') && (
-          <section className="lg:col-span-5 xl:col-span-4">
+        ) : activeTab === 'layout' ? (
+          <section className="max-w-xl mx-auto">
             <div className="flex items-center justify-between mb-4 px-2">
               <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Mirror Screen</h2>
               <div className="flex flex-wrap items-center gap-2">
@@ -1518,13 +1400,31 @@ export default function App() {
                 >
                   Add widget
                 </button>
+                <button
+                  type="button"
+                  disabled={!mirrorHttpBase.trim() || httpSyncState === 'pulling' || httpSyncState === 'pushing'}
+                  onClick={() => void loadLayoutFromMirror({ silent: false })}
+                  className={cn(
+                    'flex items-center gap-1.5 text-[10px] px-2 py-1 border rounded-lg transition-colors',
+                    mirrorHttpBase.trim() && httpSyncState !== 'pulling' && httpSyncState !== 'pushing'
+                      ? 'border-white/20 text-white/60 hover:text-white hover:border-white/40'
+                      : 'border-white/5 text-white/25 cursor-not-allowed'
+                  )}
+                >
+                  {httpSyncState === 'pulling' || httpSyncState === 'pushing' ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={12} />
+                  )}
+                  {layoutSyncLabel(mirrorHttpBase, httpSyncState)}
+                </button>
                 <p className="text-[10px] text-white/20 w-full sm:w-auto">Drag to position</p>
               </div>
             </div>
             
             <div 
               ref={mirrorRef}
-              className="relative w-full aspect-[9/16] bg-black border border-white/[0.08] rounded-[2.5rem] overflow-hidden group mx-auto max-w-[400px] lg:max-w-none shadow-[0_20px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.04)]"
+              className="relative w-full aspect-[9/16] bg-black border border-white/[0.08] rounded-[2.5rem] overflow-hidden group mx-auto max-w-[460px] shadow-[0_20px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.04)]"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none" />
               <div className="absolute top-0 left-[15%] w-[40%] h-[30%] bg-[radial-gradient(ellipse,rgba(94,225,217,0.04)_0%,transparent_70%)] pointer-events-none" />
@@ -1545,81 +1445,8 @@ export default function App() {
               <div className="absolute inset-0 rounded-[2.5rem] shadow-[inset_0_0_80px_rgba(0,0,0,0.8)] pointer-events-none" />
             </div>
           </section>
-          )}
-
-          {/* Right Column: Controls & Wardrobe */}
-          <div className="lg:col-span-7 xl:col-span-8 space-y-12">
-            {(activeTab === 'layout' || activeTab === 'connection') && <WidgetSummaryPanel
-              widgets={widgets}
-              mirrorHttpBase={mirrorHttpBase}
-              httpSyncState={httpSyncState}
-              onRefreshFromMirror={() => void loadLayoutFromMirror({ silent: false })}
-              onRemoveWidget={handleRemoveWidget}
-            />}
-            {/* Camera Section */}
-            {(activeTab === 'layout' || activeTab === 'camera') && <section>
-              <div className="flex items-center justify-between mb-4 px-2">
-                <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Camera</h2>
-              </div>
-              <GlassCard className="flex flex-col md:flex-row items-center justify-center gap-8 py-8 px-12">
-                <div className="relative">
-                  <div className="w-24 h-24 rounded-full border-2 border-white/10 flex items-center justify-center">
-                    <AnimatePresence mode="wait">
-                      {cameraLoading ? (
-                        <motion.div
-                          key="camera-loading"
-                          initial={{ scale: 0.8, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          exit={{ scale: 0.9, opacity: 0 }}
-                          className="flex flex-col items-center gap-2 text-white/80"
-                        >
-                          <Loader2 size={26} className="animate-spin" />
-                          <span className="text-[9px] uppercase tracking-wider text-white/60">Loading</span>
-                        </motion.div>
-                      ) : countdown ? (
-                        <motion.span 
-                          key={countdown}
-                          initial={{ scale: 0.5, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          exit={{ scale: 1.5, opacity: 0 }}
-                          className="text-4xl font-light"
-                        >
-                          {countdown}
-                        </motion.span>
-                      ) : (
-                        <Camera size={32} className="text-white/60" />
-                      )}
-                    </AnimatePresence>
-                  </div>
-                  {countdown && (
-                    <motion.div 
-                      className="absolute inset-0 border-2 border-white rounded-full"
-                      initial={{ pathLength: 1 }}
-                      animate={{ pathLength: 0 }}
-                      transition={{ duration: 3, ease: "linear" }}
-                    />
-                  )}
-                </div>
-                <div className="flex flex-col items-center md:items-start gap-2">
-                  <h3 className="text-lg font-light">Pose Capture</h3>
-                  <p className="text-xs text-white/40 mb-2">
-                    {cameraLoading
-                      ? 'Camera Loading... preparing capture pipeline.'
-                      : 'Trigger the mirror\'s camera for a quick snapshot.'}
-                  </p>
-                  <button 
-                    onClick={triggerCapture}
-                    disabled={cameraLoading || !!countdown}
-                    className="bg-white text-black px-10 py-3 rounded-full font-medium hover:bg-white/90 transition-all disabled:opacity-50 active:scale-95"
-                  >
-                    {cameraLoading ? 'Loading Camera...' : 'Capture Pose'}
-                  </button>
-                </div>
-              </GlassCard>
-            </section>}
-
-            {/* Wardrobe Section */}
-            {(activeTab === 'layout' || activeTab === 'wardrobe') && <section>
+        ) : activeTab === 'wardrobe' ? (
+            <section className="max-w-5xl mx-auto">
               <div className="flex items-center justify-between mb-4 px-2">
                 <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Wardrobe</h2>
                 <label className="cursor-pointer text-white/40 hover:text-white transition-colors flex items-center gap-2 text-xs">
@@ -1643,17 +1470,7 @@ export default function App() {
                     animate={{ opacity: 1, scale: 1 }}
                     className="relative group"
                   >
-                    <GlassCard 
-                      onClick={() => {
-                        const url = primaryImageUrl(item);
-                        if (!url) return;
-                        notifyWardrobeUpdated({
-                          selected_image_url: url,
-                          selected_item_id: item.id,
-                        });
-                      }}
-                      className="p-0 overflow-hidden aspect-square cursor-pointer"
-                    >
+                    <GlassCard className="p-0 overflow-hidden aspect-square">
                       <img 
                         src={primaryImageUrl(item) ?? ''} 
                         alt={item.name}
@@ -1677,124 +1494,13 @@ export default function App() {
               {wardrobe.length === 0 && !isUploading && (
                 <div className="text-center py-12 border-2 border-dashed border-white/5 rounded-2xl">
                   <p className="text-white/20 text-sm font-light">
-                    No wardrobe items yet. Upload one to start virtual try-on.
+                    No wardrobe items yet. Upload an item to add it to your mirror wardrobe.
                   </p>
                 </div>
               )}
-            </section>}
-
-            {(activeTab === 'layout' || activeTab === 'outfit') && (
-              <section>
-                <div className="flex items-center justify-between mb-4 px-2">
-                  <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold flex items-center gap-2">
-                    <Sparkles size={14} className="text-white/50" />
-                    Outfit generation
-                  </h2>
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <GlassCard className="p-4 space-y-2">
-                    <p className="text-[10px] uppercase tracking-widest text-white/35">Person photo (mirror)</p>
-                    <div className="aspect-[3/4] rounded-xl overflow-hidden bg-white/5 border border-white/10 relative">
-                      {mirrorHttpBase.trim() ? (
-                        <img
-                          key={personImageNonce}
-                          src={`${personImageLatestUrl(mirrorHttpBase.trim())}?t=${personImageNonce}`}
-                          alt="Latest person photo"
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() => setPersonImageNonce((n) => n + 1)}
-                        className="absolute bottom-2 right-2 text-[10px] px-2 py-1 rounded-md bg-black/60 text-white/80 hover:bg-black/80"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-white/35">
-                      Uses the latest image saved on the mirror (POST /api/tryon/person-image or Pi capture).
-                    </p>
-                  </GlassCard>
-
-                  <div className="space-y-4">
-                    {(
-                      [
-                        ['shirt', 'Shirt / top', selectedShirt, setSelectedShirt] as const,
-                        ['pants', 'Pants', selectedPants, setSelectedPants] as const,
-                        ['accessories', 'Accessories', selectedAccessory, setSelectedAccessory] as const,
-                      ] as const
-                    ).map(([slot, label, selected, setSelected]) => {
-                      const pool = itemsForSlot(slot);
-                      const cycle = (delta: number) => {
-                        if (!pool.length) return;
-                        const idx = selected ? pool.findIndex((i) => i.id === selected.id) : -1;
-                        const next = (idx + delta + pool.length * 2) % pool.length;
-                        setSelected(pool[next] ?? null);
-                      };
-                      const url = selected ? primaryImageUrl(selected) : null;
-                      return (
-                        <GlassCard key={slot} className="p-3 flex gap-3 items-center">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[10px] uppercase tracking-widest text-white/35 mb-1">{label}</p>
-                            <p className="text-xs text-white/50 truncate">{selected?.name ?? 'None'}</p>
-                          </div>
-                          <div className="w-16 h-16 rounded-lg overflow-hidden bg-white/5 border border-white/10 shrink-0">
-                            {url ? (
-                              <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-[10px] text-white/20">—</div>
-                            )}
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <button
-                              type="button"
-                              onClick={() => cycle(-1)}
-                              disabled={!pool.length}
-                              className="text-[10px] px-2 py-1 rounded bg-white/10 disabled:opacity-30"
-                            >
-                              Prev
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => cycle(1)}
-                              disabled={!pool.length}
-                              className="text-[10px] px-2 py-1 rounded bg-white/10 disabled:opacity-30"
-                            >
-                              Next
-                            </button>
-                          </div>
-                        </GlassCard>
-                      );
-                    })}
-                    <div className="flex flex-wrap gap-2 pt-2">
-                      <button
-                        type="button"
-                        onClick={randomizeOutfit}
-                        className="flex-1 min-w-[120px] bg-white/10 hover:bg-white/15 text-sm py-2.5 rounded-full"
-                      >
-                        Random outfit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void submitOutfitTryOn()}
-                        disabled={isGeneratingOutfit}
-                        className="flex-1 min-w-[120px] bg-white text-black text-sm py-2.5 rounded-full font-medium disabled:opacity-50 flex items-center justify-center gap-2"
-                      >
-                        {isGeneratingOutfit ? <Loader2 className="animate-spin w-4 h-4" /> : null}
-                        Generate try-on
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {activeTab === 'connection' && (
-              <section>
+            </section>
+        ) : (
+              <section className="max-w-2xl mx-auto">
                 <GlassCard className="space-y-3">
                   <h3 className="text-lg font-light">Connection Diagnostics</h3>
                   <p className="text-sm text-white/50">WebSocket: {wsUrl}</p>
@@ -1804,9 +1510,6 @@ export default function App() {
                   </p>
                 </GlassCard>
               </section>
-            )}
-          </div>
-        </div>
         )}
       </main>
 
