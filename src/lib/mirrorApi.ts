@@ -1,10 +1,8 @@
 import type {
-  CalendarEventsResponse,
-  CalendarTasksResponse,
   WidgetConfigOut,
   WidgetConfigUpdate,
 } from '../types/mirror';
-import { ApiError, requestJson, requestVoid, trimBase } from '../api/httpClient';
+import { requestJson, requestVoid, trimBase } from '../api/httpClient';
 import { routes } from '../api/routes';
 import { getMirrorApiToken } from './connectionConfig';
 
@@ -59,34 +57,4 @@ export async function mirrorPutWidgets(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-}
-
-export async function mirrorGetCalendarEvents(
-  baseUrl: string,
-  opts?: { days?: number; provider?: string },
-): Promise<CalendarEventsResponse> {
-  try {
-    return await requestJson<CalendarEventsResponse>(baseUrl, routes.calendarEvents(opts?.days, opts?.provider));
-  } catch (error) {
-    // Older mirror versions may not expose calendar routes yet.
-    if (error instanceof ApiError && error.status === 404) {
-      return { events: [], providers: [], last_sync: null };
-    }
-    throw error;
-  }
-}
-
-export async function mirrorGetCalendarTasks(
-  baseUrl: string,
-  opts?: { provider?: string },
-): Promise<CalendarTasksResponse> {
-  try {
-    return await requestJson<CalendarTasksResponse>(baseUrl, routes.calendarTasks(opts?.provider));
-  } catch (error) {
-    // Older mirror versions may not expose task routes yet.
-    if (error instanceof ApiError && error.status === 404) {
-      return { tasks: [], providers: [], last_sync: null };
-    }
-    throw error;
-  }
 }

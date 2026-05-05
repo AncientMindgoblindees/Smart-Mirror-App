@@ -159,10 +159,7 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Mirror Screen' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Wardrobe' })).not.toBeInTheDocument();
     expect(screen.queryByText(/No wardrobe items yet/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Camera' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Outfit' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Pose Capture' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Outfit generation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Connection Diagnostics' })).not.toBeInTheDocument();
   });
 
   it('renders existing wardrobe items from the mocked API', async () => {

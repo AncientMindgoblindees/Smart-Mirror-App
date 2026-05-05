@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
-  Clock, 
-  Cloud, 
   Shirt, 
   Upload, 
-  GripVertical, 
   X,
-  Check,
   Loader2,
   RefreshCw,
   Settings,

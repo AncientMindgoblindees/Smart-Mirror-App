@@ -23,28 +23,3 @@ export interface WidgetConfigUpdate {
   size_cols: number;
   config_json?: Record<string, unknown> | null;
 }
-
-export interface CalendarEventItem {
-  id: number;
-  type: string;
-  title: string;
-  start_time: string | null;
-  end_time: string | null;
-  all_day: boolean;
-  source: string;
-  priority: string;
-  completed: boolean;
-  metadata: Record<string, unknown>;
-}
-
-export interface CalendarEventsResponse {
-  events: CalendarEventItem[];
-  providers: string[];
-  last_sync: string | null;
-}
-
-export interface CalendarTasksResponse {
-  tasks: CalendarEventItem[];
-  providers: string[];
-  last_sync: string | null;
-}

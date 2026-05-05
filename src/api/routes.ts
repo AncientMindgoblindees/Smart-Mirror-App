@@ -4,26 +4,8 @@ export const routes = {
   authLogin: (provider: string) => `/api/auth/login/${provider}`,
   authLogout: (provider: string) => `/api/auth/logout/${provider}`,
   oauthStart: (provider: string) => `/api/oauth/${provider}/start`,
-  cameraCapture: '/api/camera/capture',
   clothingList: (includeImages: boolean) => `/api/clothing${includeImages ? '?include_images=true' : ''}`,
   clothingCreate: '/api/clothing/',
   clothingDelete: (itemId: number) => `/api/clothing/${itemId}`,
   clothingUploadImage: (itemId: number) => `/api/clothing/${itemId}/images`,
-  tryonGenerate: '/api/tryon/outfit-generate',
-  personImageLatest: '/api/tryon/person-image/latest',
-  personImageList: '/api/tryon/person-image',
-  personImageById: (imageId: number) => `/api/tryon/person-image/${imageId}`,
-  calendarEvents: (days?: number, provider?: string) => {
-    const sp = new URLSearchParams();
-    if (days) sp.set('days', String(days));
-    if (provider) sp.set('provider', provider);
-    const qs = sp.toString();
-    return `/api/calendar/events${qs ? `?${qs}` : ''}`;
-  },
-  calendarTasks: (provider?: string) => {
-    const sp = new URLSearchParams();
-    if (provider) sp.set('provider', provider);
-    const qs = sp.toString();
-    return `/api/calendar/tasks${qs ? `?${qs}` : ''}`;
-  },
 };
