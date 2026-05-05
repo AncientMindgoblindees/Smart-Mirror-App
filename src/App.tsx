@@ -1591,7 +1591,7 @@ export default function App() {
              </div>
              <div className="w-px h-3 bg-white/[0.06]" />
              <span className="text-[10px] uppercase tracking-[0.15em] font-semibold text-white/25">
-               Mobile Companion
+              Companion App
              </span>
           </div>
         </div>
