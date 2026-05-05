@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -226,5 +226,27 @@ describe('App', () => {
       expect(wardrobeApiMocks.createClothingWithImage).toHaveBeenCalledTimes(1);
     });
     expect(await screen.findByAltText('linen-shirt')).toBeInTheDocument();
+  });
+
+  it('opens the upload modal when an image is dropped onto the wardrobe page', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Wardrobe' }));
+    await screen.findByText(/No wardrobe items yet/i);
+
+    const dropZone = screen.getByLabelText('Wardrobe upload drop zone');
+    const file = new File(['jacket'], 'canvas-jacket.jpg', { type: 'image/jpeg' });
+
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        files: [file],
+        types: ['Files'],
+      },
+    });
+
+    expect(await screen.findByText('Clothing details')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('canvas-jacket')).toBeInTheDocument();
+    expect(wardrobeApiMocks.createClothingWithImage).not.toHaveBeenCalled();
   });
 });

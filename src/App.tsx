@@ -132,6 +132,11 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
   { id: '24h', label: '24-hour' },
 ] as const;
 
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith('image/')) return true;
+  return /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(file.name);
+}
+
 function cloneWidgetForSettingsDraft(w: Widget): Widget {
   return {
     ...w,
@@ -380,6 +385,8 @@ export default function App() {
     season: '',
     notes: '',
   });
+  const [wardrobeDragActive, setWardrobeDragActive] = useState(false);
+  const wardrobeDragDepthRef = useRef(0);
   const [wsUrl, setWsUrl] = useState(() => {
     if (typeof window === 'undefined') return 'ws://localhost:8002/ws/control';
     try {
@@ -636,16 +643,64 @@ export default function App() {
     setUploadModalOpen(true);
   };
 
-  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  const beginClothingImageUpload = (file: File) => {
     const base = mirrorHttpBase.trim();
     if (!base) {
       toast.error('Set Mirror HTTP base before uploading');
       return;
     }
+    if (!isImageFile(file)) {
+      toast.error('Choose an image file to upload');
+      return;
+    }
     openUploadModal(file);
+  };
+
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    beginClothingImageUpload(file);
+  };
+
+  const resetWardrobeDropState = () => {
+    wardrobeDragDepthRef.current = 0;
+    setWardrobeDragActive(false);
+  };
+
+  const handleWardrobeDragEnter = (e: React.DragEvent<HTMLElement>) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    wardrobeDragDepthRef.current += 1;
+    setWardrobeDragActive(true);
+  };
+
+  const handleWardrobeDragOver = (e: React.DragEvent<HTMLElement>) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setWardrobeDragActive(true);
+  };
+
+  const handleWardrobeDragLeave = (e: React.DragEvent<HTMLElement>) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    wardrobeDragDepthRef.current = Math.max(0, wardrobeDragDepthRef.current - 1);
+    if (wardrobeDragDepthRef.current === 0) {
+      setWardrobeDragActive(false);
+    }
+  };
+
+  const handleWardrobeDrop = (e: React.DragEvent<HTMLElement>) => {
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+    e.preventDefault();
+    resetWardrobeDropState();
+    const file = Array.from(e.dataTransfer.files).find(isImageFile);
+    if (!file) {
+      toast.error('Choose an image file to upload');
+      return;
+    }
+    beginClothingImageUpload(file);
   };
 
   const commitUpload = async () => {
@@ -1446,7 +1501,20 @@ export default function App() {
             </div>
           </section>
         ) : activeTab === 'wardrobe' ? (
-            <section className="max-w-5xl mx-auto">
+            <section
+              aria-label="Wardrobe upload drop zone"
+              onDragEnter={handleWardrobeDragEnter}
+              onDragOver={handleWardrobeDragOver}
+              onDragLeave={handleWardrobeDragLeave}
+              onDrop={handleWardrobeDrop}
+              className={cn(
+                'relative max-w-5xl mx-auto rounded-2xl transition-all duration-200',
+                wardrobeDragActive ? 'ring-2 ring-white/30 bg-white/[0.03]' : ''
+              )}
+            >
+              {wardrobeDragActive && (
+                <div className="pointer-events-none absolute inset-0 z-20 rounded-2xl border-2 border-dashed border-white/30 bg-black/45 backdrop-blur-[2px]" />
+              )}
               <div className="flex items-center justify-between mb-4 px-2">
                 <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Wardrobe</h2>
                 <label className="cursor-pointer text-white/40 hover:text-white transition-colors flex items-center gap-2 text-xs">
