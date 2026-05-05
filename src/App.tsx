@@ -128,6 +128,11 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
   { id: '24h', label: '24-hour' },
 ] as const;
 
+const CLOTHING_CATEGORY_ITEMS = CLOTHING_CATEGORIES.map((category) => ({
+  id: category,
+  label: category,
+}));
+
 function isImageFile(file: File): boolean {
   if (file.type.startsWith('image/')) return true;
   return /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(file.name);
@@ -155,20 +160,22 @@ const GlassCard = ({ children, className, onClick }: { children: React.ReactNode
   </div>
 );
 
-const MirrorWidget = ({
-  widget,
-  onUpdate,
-  onResizeCommit,
-  onConfigOpen,
-  onRemove,
-  containerRef
-}: {
+type MirrorWidgetProps = {
   widget: Widget;
   onUpdate: (id: string, updates: Partial<Widget>) => void;
   onResizeCommit: (id: string, width: number, height: number) => void;
   onConfigOpen: (widget: Widget) => void;
   onRemove: (id: string) => void;
   containerRef: React.RefObject<HTMLDivElement>;
+};
+
+const MirrorWidget: React.ComponentType<MirrorWidgetProps> = ({
+  widget,
+  onUpdate,
+  onResizeCommit,
+  onConfigOpen,
+  onRemove,
+  containerRef
 }) => {
   const activeInteractionRef = useRef<null | (() => void)>(null);
   const MIN_WIDGET_PERCENT = 1;
@@ -691,7 +698,7 @@ export default function App() {
     if (!Array.from(e.dataTransfer.types).includes('Files')) return;
     e.preventDefault();
     resetWardrobeDropState();
-    const file = Array.from(e.dataTransfer.files).find(isImageFile);
+    const file = Array.from<File>(e.dataTransfer.files).find(isImageFile);
     if (!file) {
       toast.error('Choose an image file to upload');
       return;
@@ -968,7 +975,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden"
+              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)]"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
               <div className="relative z-10">
@@ -1068,7 +1075,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden max-h-[90vh] overflow-y-auto"
+              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] max-h-[90vh] overflow-y-auto"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
               <div className="relative z-10 space-y-4">
@@ -1086,7 +1093,7 @@ export default function App() {
                   </button>
                 </div>
                 <p className="text-xs text-white/45">
-                  Tag this item before the image is uploaded to Cloudinary.
+                  Tag this item before the image is uploaded to the mirror wardrobe.
                 </p>
                 <div className="space-y-2">
                   <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Name *</label>
@@ -1099,17 +1106,14 @@ export default function App() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Category *</label>
-                  <select
+                  <FluidDropdown
+                    items={CLOTHING_CATEGORY_ITEMS}
                     value={uploadMeta.category}
-                    onChange={(e) => setUploadMeta((m) => ({ ...m, category: e.target.value }))}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm"
-                  >
-                    {CLOTHING_CATEGORIES.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(category) => setUploadMeta((m) => ({ ...m, category }))}
+                    className="max-w-none"
+                    buttonClassName="h-14 px-5 text-base font-semibold bg-white/5 border-white/10"
+                    menuClassName="max-h-48 overflow-y-auto"
+                  />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Color</label>
@@ -1171,7 +1175,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden"
+              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)]"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
               <div className="relative z-10">
