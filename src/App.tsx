@@ -4,6 +4,7 @@ import {
   Upload, 
   X,
   Loader2,
+  Palette,
   RefreshCw,
   Settings,
   Wifi,
@@ -27,7 +28,9 @@ import {
 import { loadLayoutCache, saveLayoutCache } from './lib/layoutLocalCache';
 import {
   mirrorGetWidgets,
+  mirrorGetUserSettings,
   mirrorPutWidgets,
+  mirrorPutUserSettings,
   mirrorAuthProviders,
   mirrorAuthStartDeviceLogin,
   mirrorAuthLogout,
@@ -36,6 +39,7 @@ import {
 } from './lib/mirrorApi';
 import { CUSTOM_WIDGET_TEMPLATES, standaloneTextWidgetBaseId } from './lib/customWidgetTemplates';
 import type { WidgetConfigOut } from './types/mirror';
+import type { UserSettingsOut } from './types/mirror';
 import { WIDGETS_REMOTE_UPDATED_EVENT, createSessionId, createWidgetsSyncEnvelope } from './shared/ws/contracts';
 import { MirrorConnectionManager } from './lib/connectionManager';
 import {
@@ -48,6 +52,14 @@ import {
 } from './lib/connectionConfig';
 import { FluidDropdown } from './components/ui/fluid-dropdown';
 import { WIDGET_SIZE_PRESETS, inferWidgetSizePreset, type WidgetSizePreset } from './lib/widgetSizePresets';
+import {
+  BACKGROUND_THEME_PRESETS,
+  WIDGET_THEME_PRESETS,
+  getBackgroundThemePreset,
+  getWidgetThemePreset,
+  parseThemeSelection,
+  serializeThemeSelection,
+} from './lib/themePresets';
 import type { WidgetTemplateCategory } from './lib/customWidgetTemplates';
 import {
   CLOTHING_CATEGORIES,
@@ -61,6 +73,7 @@ import {
 import { useWardrobeActions } from './features/wardrobe/useWardrobeActions';
 
 type HttpSyncState = 'idle' | 'pulling' | 'pushing' | 'saved' | 'error';
+type ThemeSyncState = 'idle' | 'loading' | 'saving' | 'saved' | 'error';
 
 function layoutSyncLabel(mirrorHttpBase: string, httpSyncState: HttpSyncState): string {
   if (!mirrorHttpBase.trim()) return 'Local layout';
@@ -69,6 +82,15 @@ function layoutSyncLabel(mirrorHttpBase: string, httpSyncState: HttpSyncState): 
   if (httpSyncState === 'saved') return 'Synced';
   if (httpSyncState === 'error') return 'Sync issue';
   return 'Mirror sync';
+}
+
+function themeSyncLabel(mirrorHttpBase: string, themeSyncState: ThemeSyncState): string {
+  if (!mirrorHttpBase.trim()) return 'Set connection first';
+  if (themeSyncState === 'loading') return 'Refreshing theme';
+  if (themeSyncState === 'saving') return 'Saving theme';
+  if (themeSyncState === 'saved') return 'Theme synced';
+  if (themeSyncState === 'error') return 'Theme sync issue';
+  return 'Live theme sync';
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -142,6 +164,24 @@ function cloneWidgetForSettingsDraft(w: Widget): Widget {
   return {
     ...w,
     config: { ...w.config },
+  };
+}
+
+function readUserSettingsFromControlPayload(data: Record<string, unknown>): UserSettingsOut | null {
+  const payload = data.payload;
+  if (!payload || typeof payload !== 'object') return null;
+  const record = payload as Record<string, unknown>;
+  const settings = record.settings && typeof record.settings === 'object'
+    ? record.settings as Record<string, unknown>
+    : record;
+  if (typeof settings.theme !== 'string') return null;
+  return {
+    id: typeof settings.id === 'number' ? settings.id : 0,
+    theme: settings.theme,
+    primary_font_size: typeof settings.primary_font_size === 'number' ? settings.primary_font_size : 72,
+    accent_color: typeof settings.accent_color === 'string' ? settings.accent_color : '#4a9eff',
+    created_at: typeof settings.created_at === 'string' ? settings.created_at : '',
+    updated_at: typeof settings.updated_at === 'string' ? settings.updated_at : '',
   };
 }
 
@@ -365,13 +405,16 @@ const MirrorWidget: React.ComponentType<MirrorWidgetProps> = ({
 export default function App() {
   const sessionIdRef = useRef(createSessionId());
   const [activeTab, setActiveTab] = useState<
-    'layout' | 'wardrobe' | 'connection' | 'accounts'
+    'layout' | 'theme' | 'wardrobe' | 'connection' | 'accounts'
   >('layout');
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
     return loadLayoutCache() ?? hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
   });
   const [httpSyncState, setHttpSyncState] = useState<HttpSyncState>('idle');
+  const [themeSyncState, setThemeSyncState] = useState<ThemeSyncState>('idle');
+  const [selectedWidgetThemeId, setSelectedWidgetThemeId] = useState('glass-cyan');
+  const [selectedBackgroundThemeId, setSelectedBackgroundThemeId] = useState('noir');
   const [customTemplateId, setCustomTemplateId] = useState(CUSTOM_WIDGET_TEMPLATES[0]?.id ?? 'sticky-note');
   const [activeTemplateCategory, setActiveTemplateCategory] = useState<'all' | WidgetTemplateCategory>('all');
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -447,6 +490,57 @@ export default function App() {
     setMirrorApiTokenDraft(mirrorApiToken);
   }, [showSettings, mirrorApiToken, mirrorHttpBase, wsUrl]);
 
+  const applyUserSettings = useCallback((settings: UserSettingsOut) => {
+    const parsed = parseThemeSelection(settings.theme);
+    setSelectedWidgetThemeId(parsed.widgetTheme);
+    setSelectedBackgroundThemeId(parsed.backgroundTheme);
+  }, []);
+
+  const loadThemeFromMirror = useCallback(async (opts?: { silent?: boolean }) => {
+    const base = mirrorHttpBase.trim();
+    if (!base) return;
+    setThemeSyncState('loading');
+    try {
+      const settings = await mirrorGetUserSettings(base);
+      applyUserSettings(settings);
+      setThemeSyncState('saved');
+      window.setTimeout(() => setThemeSyncState('idle'), 2000);
+      if (!opts?.silent) toast.success('Loaded theme from mirror');
+    } catch {
+      setThemeSyncState('error');
+      window.setTimeout(() => setThemeSyncState('idle'), 3000);
+      if (!opts?.silent) toast.error('Could not load theme from mirror');
+    }
+  }, [applyUserSettings, mirrorHttpBase]);
+
+  const saveThemeToMirror = useCallback(async (next: { widgetTheme?: string; backgroundTheme?: string }) => {
+    const base = mirrorHttpBase.trim();
+    if (!base) {
+      toast.error('Set Mirror HTTP base before saving theme');
+      return;
+    }
+    const selection = {
+      widgetTheme: next.widgetTheme ?? selectedWidgetThemeId,
+      backgroundTheme: next.backgroundTheme ?? selectedBackgroundThemeId,
+    };
+    setSelectedWidgetThemeId(selection.widgetTheme);
+    setSelectedBackgroundThemeId(selection.backgroundTheme);
+    setThemeSyncState('saving');
+    try {
+      const updated = await mirrorPutUserSettings(base, {
+        theme: serializeThemeSelection(selection),
+      });
+      applyUserSettings(updated);
+      setThemeSyncState('saved');
+      window.setTimeout(() => setThemeSyncState('idle'), 2000);
+      toast.success('Theme saved to mirror');
+    } catch {
+      setThemeSyncState('error');
+      window.setTimeout(() => setThemeSyncState('idle'), 3000);
+      toast.error('Failed to save theme to mirror');
+    }
+  }, [applyUserSettings, mirrorHttpBase, selectedBackgroundThemeId, selectedWidgetThemeId]);
+
   const loadLayoutFromMirror = useCallback(async (opts?: { silent?: boolean }) => {
     const configuredBase = mirrorHttpBase.trim();
     if (!configuredBase) return;
@@ -501,6 +595,10 @@ export default function App() {
   useEffect(() => {
     void loadLayoutFromMirror({ silent: true });
   }, [loadLayoutFromMirror]);
+
+  useEffect(() => {
+    void loadThemeFromMirror({ silent: true });
+  }, [loadThemeFromMirror]);
 
   useEffect(() => {
     return () => {
@@ -568,6 +666,28 @@ export default function App() {
     if (type === 'DEVICE_CONNECTED') { toast.success('Paired with mirror'); return; }
     if (type === 'DEVICE_ERROR') { toast.error(String((data.payload as Record<string, unknown>)?.message ?? 'Pairing failed')); return; }
     if (type === 'WIDGETS_SYNC_APPLIED') { toast.success('Mirror applied layout update'); }
+    if (type === 'USER_SETTINGS_UPDATED') {
+      const settings = readUserSettingsFromControlPayload(data);
+      if (settings) {
+        applyUserSettings(settings);
+        setThemeSyncState('saved');
+        window.setTimeout(() => setThemeSyncState('idle'), 2000);
+      }
+      return;
+    }
+    if (type === 'MIRROR_STATE_SNAPSHOT') {
+      const payload = data.payload;
+      if (payload && typeof payload === 'object') {
+        const settings = (payload as Record<string, unknown>).settings;
+        if (settings && typeof settings === 'object') {
+          const parsed = readUserSettingsFromControlPayload({
+            type: 'USER_SETTINGS_UPDATED',
+            payload: { settings },
+          });
+          if (parsed) applyUserSettings(parsed);
+        }
+      }
+    }
     if (type === WIDGETS_REMOTE_UPDATED_EVENT) {
       if (remoteRefreshTimerRef.current) {
         clearTimeout(remoteRefreshTimerRef.current);
@@ -938,6 +1058,7 @@ export default function App() {
         <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.04] backdrop-blur-sm p-1 gap-0.5 shadow-[0_4px_16px_rgba(0,0,0,0.2)]">
           {[
             { id: 'layout', label: 'Layout' },
+            { id: 'theme', label: 'Theme' },
             { id: 'wardrobe', label: 'Wardrobe' },
             { id: 'accounts', label: 'Accounts' },
             { id: 'connection', label: 'Connection' },
@@ -1428,6 +1549,128 @@ export default function App() {
                 </ul>
               )}
             </GlassCard>
+          </section>
+        ) : activeTab === 'theme' ? (
+          <section className="max-w-4xl mx-auto px-4 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Theme</h2>
+              </div>
+              <button
+                type="button"
+                disabled={!mirrorHttpBase.trim() || themeSyncState === 'loading' || themeSyncState === 'saving'}
+                onClick={() => void loadThemeFromMirror({ silent: false })}
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition-colors',
+                  mirrorHttpBase.trim() && themeSyncState !== 'loading' && themeSyncState !== 'saving'
+                    ? 'border-white/15 text-white/60 hover:text-white hover:border-white/35'
+                    : 'border-white/5 text-white/25 cursor-not-allowed'
+                )}
+              >
+                {themeSyncState === 'loading' || themeSyncState === 'saving' ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <RefreshCw size={14} />
+                )}
+                {themeSyncLabel(mirrorHttpBase, themeSyncState)}
+              </button>
+            </div>
+
+            <GlassCard className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-white/8 border border-white/10 flex items-center justify-center">
+                  <Palette size={18} className="text-white/70" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-white/90">Live Preview</h3>
+                  <p className="text-xs text-white/35">
+                    {getWidgetThemePreset(selectedWidgetThemeId).label} on {getBackgroundThemePreset(selectedBackgroundThemeId).label}
+                  </p>
+                </div>
+              </div>
+              <div
+                className="relative h-44 overflow-hidden rounded-2xl border border-white/10"
+                style={{
+                  background: `radial-gradient(circle at 20% 20%, ${getWidgetThemePreset(selectedWidgetThemeId).colors[0]}26, transparent 42%), linear-gradient(135deg, ${getBackgroundThemePreset(selectedBackgroundThemeId).colors[0]}, ${getBackgroundThemePreset(selectedBackgroundThemeId).colors[1]})`,
+                }}
+              >
+                <div className="absolute left-5 top-5 w-36 rounded-xl border border-white/15 bg-black/35 p-4 shadow-[0_16px_44px_rgba(0,0,0,0.35)] backdrop-blur-md">
+                  <div
+                    className="h-2 w-16 rounded-full"
+                    style={{ backgroundColor: getWidgetThemePreset(selectedWidgetThemeId).colors[0] }}
+                  />
+                  <div className="mt-4 h-2 w-24 rounded-full bg-white/45" />
+                  <div className="mt-2 h-2 w-14 rounded-full bg-white/25" />
+                </div>
+                <div className="absolute bottom-5 right-5 w-28 rounded-xl border border-white/15 bg-black/30 p-4 backdrop-blur-md">
+                  <div className="h-8 w-8 rounded-full border border-white/20" style={{ backgroundColor: getWidgetThemePreset(selectedWidgetThemeId).colors[1] }} />
+                  <div className="mt-3 h-2 w-16 rounded-full bg-white/35" />
+                </div>
+              </div>
+            </GlassCard>
+
+            <div className="grid gap-6 lg:grid-cols-2">
+              <GlassCard className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-white/90">Widget Colors</h3>
+                </div>
+                <div className="grid gap-2">
+                  {WIDGET_THEME_PRESETS.map((theme) => (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => void saveThemeToMirror({ widgetTheme: theme.id })}
+                      className={cn(
+                        'flex items-center justify-between rounded-xl border px-3 py-3 text-left transition-colors',
+                        selectedWidgetThemeId === theme.id
+                          ? 'border-white/35 bg-white/12 text-white'
+                          : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-white hover:border-white/25'
+                      )}
+                    >
+                      <span>
+                        <span className="block text-sm">{theme.label}</span>
+                        <span className="block text-xs text-white/35">{theme.hint}</span>
+                      </span>
+                      <span className="flex gap-1.5">
+                        {theme.colors.map((color) => (
+                          <span key={color} className="h-5 w-5 rounded-full border border-white/20" style={{ backgroundColor: color }} />
+                        ))}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </GlassCard>
+
+              <GlassCard className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-white/90">Background Colors</h3>
+                </div>
+                <div className="grid gap-2">
+                  {BACKGROUND_THEME_PRESETS.map((theme) => (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => void saveThemeToMirror({ backgroundTheme: theme.id })}
+                      className={cn(
+                        'flex items-center justify-between rounded-xl border px-3 py-3 text-left transition-colors',
+                        selectedBackgroundThemeId === theme.id
+                          ? 'border-white/35 bg-white/12 text-white'
+                          : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-white hover:border-white/25'
+                      )}
+                    >
+                      <span>
+                        <span className="block text-sm">{theme.label}</span>
+                        <span className="block text-xs text-white/35">{theme.hint}</span>
+                      </span>
+                      <span
+                        className="h-6 w-12 rounded-full border border-white/20"
+                        style={{ background: `linear-gradient(135deg, ${theme.colors[0]}, ${theme.colors[1]})` }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </GlassCard>
+            </div>
           </section>
         ) : activeTab === 'layout' ? (
           <section className="max-w-xl mx-auto">

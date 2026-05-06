@@ -1,5 +1,6 @@
 export const routes = {
   widgets: '/api/widgets/',
+  userSettings: '/api/user/settings',
   authProviders: '/api/auth/providers',
   authLogin: (provider: string) => `/api/auth/login/${provider}`,
   authLogout: (provider: string) => `/api/auth/logout/${provider}`,

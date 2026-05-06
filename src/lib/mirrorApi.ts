@@ -1,4 +1,6 @@
 import type {
+  UserSettingsOut,
+  UserSettingsUpdate,
   WidgetConfigOut,
   WidgetConfigUpdate,
 } from '../types/mirror';
@@ -53,6 +55,21 @@ export async function mirrorPutWidgets(
   payload: WidgetConfigUpdate[]
 ): Promise<WidgetConfigOut[]> {
   return requestJson<WidgetConfigOut[]>(baseUrl, routes.widgets, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function mirrorGetUserSettings(baseUrl: string): Promise<UserSettingsOut> {
+  return requestJson<UserSettingsOut>(baseUrl, routes.userSettings);
+}
+
+export async function mirrorPutUserSettings(
+  baseUrl: string,
+  payload: UserSettingsUpdate
+): Promise<UserSettingsOut> {
+  return requestJson<UserSettingsOut>(baseUrl, routes.userSettings, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
