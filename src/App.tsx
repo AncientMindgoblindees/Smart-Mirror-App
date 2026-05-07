@@ -174,6 +174,7 @@ const CLOTHING_CATEGORY_ITEMS = CLOTHING_CATEGORIES.map((category) => ({
   id: category,
   label: category,
 }));
+const DEFAULT_CLOTHING_CATEGORY = CLOTHING_CATEGORIES[0];
 
 function isImageFile(file: File): boolean {
   if (file.type.startsWith('image/')) return true;
@@ -447,7 +448,7 @@ export default function App() {
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
   const [uploadMeta, setUploadMeta] = useState<ClothingItemCreate>({
     name: '',
-    category: 'shirt',
+    category: DEFAULT_CLOTHING_CATEGORY,
     color: '',
     season: '',
     notes: '',
@@ -819,7 +820,7 @@ export default function App() {
     setPendingUploadFile(file);
     setUploadMeta({
       name: baseName,
-      category: 'shirt',
+      category: DEFAULT_CLOTHING_CATEGORY,
       color: '',
       season: '',
       notes: '',

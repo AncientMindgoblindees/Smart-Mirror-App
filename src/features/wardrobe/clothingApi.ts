@@ -85,5 +85,5 @@ export async function createClothingWithImage(
 }
 
 /** Category values stored in the mirror backend. */
-export const CLOTHING_CATEGORIES = ['shirt', 'pants', 'accessories', 'other'] as const;
+export const CLOTHING_CATEGORIES = ['top', 'bottom', 'hats', 'shoes'] as const;
 export type ClothingCategoryId = (typeof CLOTHING_CATEGORIES)[number];

@@ -125,7 +125,7 @@ vi.mock('./features/wardrobe/useWardrobeActions', () => ({
 vi.mock('./lib/mirrorApi', () => mirrorApiMocks);
 
 vi.mock('./features/wardrobe/clothingApi', () => ({
-  CLOTHING_CATEGORIES: ['shirt', 'pants', 'accessories', 'other'],
+  CLOTHING_CATEGORIES: ['top', 'bottom', 'hats', 'shoes'],
   listClothingItems: wardrobeApiMocks.listClothingItems,
   createClothingWithImage: wardrobeApiMocks.createClothingWithImage,
   deleteClothingItem: wardrobeApiMocks.deleteClothingItem,
@@ -189,7 +189,7 @@ describe('App', () => {
       {
         id: 7,
         name: 'Blue Shirt',
-        category: 'shirt',
+        category: 'top',
         created_at: '2026-04-26T12:00:00Z',
         updated_at: '2026-04-26T12:00:00Z',
         images: [{ image_url: 'https://cdn.example/blue-shirt.png' }],
@@ -272,7 +272,7 @@ describe('App', () => {
     wardrobeApiMocks.createClothingWithImage.mockResolvedValue({
       id: 11,
       name: 'linen-shirt',
-      category: 'shirt',
+      category: 'shoes',
       created_at: '2026-04-26T12:00:00Z',
       updated_at: '2026-04-26T12:00:00Z',
       images: [{ image_url: 'https://cdn.example/linen-shirt.png' }],
@@ -290,12 +290,26 @@ describe('App', () => {
 
     expect(await screen.findByText('Clothing details')).toBeInTheDocument();
     expect(screen.getByDisplayValue('linen-shirt')).toBeInTheDocument();
+    const categorySelect = screen.getByRole('combobox', { name: 'dropdown' });
+    expect(screen.getByRole('option', { name: 'top' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'bottom' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'hats' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'shoes' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'accessories' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'other' })).not.toBeInTheDocument();
+
+    await user.selectOptions(categorySelect, 'shoes');
 
     await user.click(screen.getByRole('button', { name: 'Upload' }));
 
     await waitFor(() => {
       expect(wardrobeApiMocks.createClothingWithImage).toHaveBeenCalledTimes(1);
     });
+    expect(wardrobeApiMocks.createClothingWithImage).toHaveBeenCalledWith(
+      'http://mirror.test',
+      expect.any(File),
+      expect.objectContaining({ category: 'shoes' }),
+    );
     expect(await screen.findByAltText('linen-shirt')).toBeInTheDocument();
   });
 
