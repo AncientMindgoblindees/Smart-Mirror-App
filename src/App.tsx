@@ -171,6 +171,7 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
 ] as const;
 
 const NEWS_CATEGORY_ITEMS = [
+  { id: 'general,tech,business', label: 'All feeds' },
   { id: '', label: 'Top stories' },
   { id: 'general', label: 'General' },
   { id: 'business', label: 'Business' },
@@ -1068,7 +1069,7 @@ export default function App() {
         break;
       case 'news':
         name = 'News';
-        config = { limit: 5, locale: 'us', language: 'en', categories: '' };
+        config = { limit: 5, locale: 'us', language: 'en', categories: 'general,tech,business' };
         break;
       case 'reminders':
         name = 'Reminders';
