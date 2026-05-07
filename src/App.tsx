@@ -170,6 +170,13 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
   { id: '24h', label: '24-hour' },
 ] as const;
 
+const EMAIL_VIEW_ITEMS = [
+  { id: 'unread_or_high', label: 'Unread + Important' },
+  { id: 'unread', label: 'Unread' },
+  { id: 'high_priority', label: 'Important' },
+  { id: 'all', label: 'All Inbox' },
+] as const;
+
 const NEWS_CATEGORY_ITEMS = [
   { id: 'general,tech,business', label: 'All feeds' },
   { id: '', label: 'Top stories' },
@@ -1065,7 +1072,7 @@ export default function App() {
         break;
       case 'email':
         name = 'Email';
-        config = { limit: 8, mode: 'unread_or_high' };
+        config = { limit: 8, mode: 'unread_or_high', timeFormat: '24h' };
         break;
       case 'news':
         name = 'News';
@@ -1478,6 +1485,44 @@ export default function App() {
                         value={String(widgetSettingsDraft.config.timeFormat ?? '24h') as '12h' | '24h'}
                         onChange={(value) => patchWidgetSettingsDraftConfig({ timeFormat: value })}
                         className="max-w-none"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {widgetSettingsDraft.id === 'email' && (
+                  <>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">View Mode</label>
+                      <FluidDropdown
+                        items={[...EMAIL_VIEW_ITEMS]}
+                        value={String(widgetSettingsDraft.config.mode ?? 'unread_or_high') as (typeof EMAIL_VIEW_ITEMS)[number]['id']}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ mode: value })}
+                        className="max-w-none"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Time Format</label>
+                      <FluidDropdown
+                        items={[...CALENDAR_TIME_FORMAT_ITEMS]}
+                        value={String(widgetSettingsDraft.config.timeFormat ?? '24h') as '12h' | '24h'}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ timeFormat: value })}
+                        className="max-w-none"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Message Limit</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={Number(widgetSettingsDraft.config.limit ?? 8)}
+                        onChange={(e) =>
+                          patchWidgetSettingsDraftConfig({
+                            limit: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 8)),
+                          })
+                        }
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
                       />
                     </div>
                   </>
