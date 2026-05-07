@@ -4,7 +4,8 @@ export type WidgetTemplateKind =
   | 'clock'
   | 'weather'
   | 'calendar'
-  | 'email';
+  | 'email'
+  | 'news';
 
 export type WidgetTemplateCategory = 'lifestyle' | 'desk' | 'tech' | 'home';
 
@@ -70,6 +71,17 @@ export const CUSTOM_WIDGET_TEMPLATES: CustomWidgetTemplate[] = [
     y: 42,
     width: 32,
     height: 20,
+  },
+  {
+    id: 'news-core',
+    mirrorWidgetId: 'news',
+    label: 'News',
+    kind: 'news',
+    category: 'desk',
+    x: 10,
+    y: 42,
+    width: 44,
+    height: 28,
   },
   {
     id: 'sticky-note',

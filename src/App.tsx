@@ -170,6 +170,20 @@ const CALENDAR_TIME_FORMAT_ITEMS = [
   { id: '24h', label: '24-hour' },
 ] as const;
 
+const NEWS_CATEGORY_ITEMS = [
+  { id: '', label: 'Top stories' },
+  { id: 'general', label: 'General' },
+  { id: 'business', label: 'Business' },
+  { id: 'tech', label: 'Technology' },
+  { id: 'science', label: 'Science' },
+  { id: 'health', label: 'Health' },
+  { id: 'sports', label: 'Sports' },
+  { id: 'entertainment', label: 'Entertainment' },
+  { id: 'politics', label: 'Politics' },
+  { id: 'food', label: 'Food' },
+  { id: 'travel', label: 'Travel' },
+] as const;
+
 const CLOTHING_CATEGORY_ITEMS = CLOTHING_CATEGORIES.map((category) => ({
   id: category,
   label: category,
@@ -1052,6 +1066,10 @@ export default function App() {
         name = 'Email';
         config = { limit: 8, mode: 'unread_or_high' };
         break;
+      case 'news':
+        name = 'News';
+        config = { limit: 5, locale: 'us', language: 'en', categories: '' };
+        break;
       case 'reminders':
         name = 'Reminders';
         config = { limit: 5, showCompleted: false };
@@ -1162,7 +1180,7 @@ export default function App() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="relative w-full max-w-sm bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)]"
+              className="relative w-full max-w-sm max-h-[85vh] overflow-y-auto bg-zinc-950/90 backdrop-blur-2xl border border-white/[0.08] rounded-3xl p-8 shadow-[0_24px_80px_rgba(0,0,0,0.6)]"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none rounded-3xl" />
               <div className="relative z-10">
@@ -1459,6 +1477,53 @@ export default function App() {
                         value={String(widgetSettingsDraft.config.timeFormat ?? '24h') as '12h' | '24h'}
                         onChange={(value) => patchWidgetSettingsDraftConfig({ timeFormat: value })}
                         className="max-w-none"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {widgetSettingsDraft.id === 'news' && (
+                  <>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Story Limit</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={Number(widgetSettingsDraft.config.limit ?? 5)}
+                        onChange={(e) =>
+                          patchWidgetSettingsDraftConfig({
+                            limit: Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 5)),
+                          })
+                        }
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Category</label>
+                      <FluidDropdown
+                        items={[...NEWS_CATEGORY_ITEMS]}
+                        value={String(widgetSettingsDraft.config.categories ?? '') as (typeof NEWS_CATEGORY_ITEMS)[number]['id']}
+                        onChange={(value) => patchWidgetSettingsDraftConfig({ categories: value })}
+                        className="max-w-none"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Country Code</label>
+                      <input
+                        type="text"
+                        value={String(widgetSettingsDraft.config.locale ?? 'us')}
+                        onChange={(e) => patchWidgetSettingsDraftConfig({ locale: e.target.value.toLowerCase() })}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Search</label>
+                      <input
+                        type="text"
+                        value={String(widgetSettingsDraft.config.search ?? '')}
+                        onChange={(e) => patchWidgetSettingsDraftConfig({ search: e.target.value })}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-white/20 transition-colors"
                       />
                     </div>
                   </>
