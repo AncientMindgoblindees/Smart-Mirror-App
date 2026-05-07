@@ -41,3 +41,18 @@
 .companion-select {
   border-color: rgb(212 212 216);
 }
+
+.widget-action-button {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .widget-action-button {
+    opacity: 0;
+  }
+
+  .group:hover .widget-action-button,
+  .group:focus-within .widget-action-button {
+    opacity: 1;
+  }
+}

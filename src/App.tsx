@@ -8,8 +8,7 @@ import {
   RefreshCw,
   Settings,
   Wifi,
-  WifiOff,
-  Trash2
+  WifiOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
@@ -362,10 +361,10 @@ const MirrorWidget: React.ComponentType<MirrorWidgetProps> = ({
             e.stopPropagation();
             onRemove(widget.id);
           }}
-          className="absolute top-1 left-1 p-1 text-white/20 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+          className="widget-action-button absolute top-1 left-1 p-1 text-white/50 hover:text-red-400 transition-colors"
           title="Remove widget"
         >
-          <Trash2 size={12} />
+          <X size={12} />
         </button>
         {/* Settings Button */}
         <button 
@@ -374,7 +373,8 @@ const MirrorWidget: React.ComponentType<MirrorWidgetProps> = ({
             e.stopPropagation();
             onConfigOpen(widget);
           }}
-          className="absolute top-1 right-1 p-1 text-white/20 hover:text-white transition-colors opacity-0 group-hover:opacity-100"
+          className="widget-action-button absolute top-1 right-1 p-1 text-white/50 hover:text-white transition-colors"
+          title="Widget settings"
         >
           <Settings size={12} />
         </button>
