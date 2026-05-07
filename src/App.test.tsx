@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mirrorApiMocks = vi.hoisted(() => ({
   mirrorGetWidgets: vi.fn(),
   mirrorPutWidgets: vi.fn(),
+  mirrorGetUserSettings: vi.fn(),
+  mirrorPutUserSettings: vi.fn(),
   mirrorAuthProviders: vi.fn(),
   mirrorAuthStartDeviceLogin: vi.fn(),
   mirrorAuthLogout: vi.fn(),
@@ -135,8 +137,28 @@ import App from './App';
 
 
 beforeEach(() => {
+  vi.clearAllMocks();
+
   mirrorApiMocks.mirrorGetWidgets.mockResolvedValue([]);
   mirrorApiMocks.mirrorPutWidgets.mockResolvedValue([]);
+  mirrorApiMocks.mirrorGetUserSettings.mockResolvedValue({
+    id: 1,
+    theme: 'w:glass-cyan|b:noir',
+    primary_font_size: 72,
+    accent_color: '#4a9eff',
+    created_at: '2026-04-26T12:00:00Z',
+    updated_at: '2026-04-26T12:00:00Z',
+  });
+  mirrorApiMocks.mirrorPutUserSettings.mockImplementation((_base: string, payload: { theme?: string }) =>
+    Promise.resolve({
+      id: 1,
+      theme: payload.theme ?? 'w:glass-cyan|b:noir',
+      primary_font_size: 72,
+      accent_color: '#4a9eff',
+      created_at: '2026-04-26T12:00:00Z',
+      updated_at: '2026-04-26T12:00:00Z',
+    }),
+  );
   mirrorApiMocks.mirrorAuthProviders.mockResolvedValue([]);
   mirrorApiMocks.mirrorAuthStartDeviceLogin.mockResolvedValue(undefined);
   mirrorApiMocks.mirrorAuthLogout.mockResolvedValue(undefined);
@@ -192,6 +214,58 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Connection Diagnostics' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Mirror Screen' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Wardrobe' })).not.toBeInTheDocument();
+  });
+
+  it('uses selected theme colors on the companion app shell', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mirrorApiMocks.mirrorGetUserSettings).toHaveBeenCalledTimes(1);
+    });
+    await user.click(screen.getByRole('button', { name: 'Theme' }));
+
+    expect(screen.queryByText('Live Preview')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Amber Gold/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-app-shell')).toHaveStyle('--color-accent: #ffbe63');
+    });
+  });
+
+  it('applies mirror theme colors to the companion app shell when live theme sync runs', async () => {
+    mirrorApiMocks.mirrorGetUserSettings
+      .mockResolvedValueOnce({
+        id: 1,
+        theme: 'w:glass-cyan|b:noir',
+        primary_font_size: 72,
+        accent_color: '#4a9eff',
+        created_at: '2026-04-26T12:00:00Z',
+        updated_at: '2026-04-26T12:00:00Z',
+      })
+      .mockResolvedValueOnce({
+        id: 1,
+        theme: 'w:mint-neon|b:emerald',
+        primary_font_size: 72,
+        accent_color: '#4a9eff',
+        created_at: '2026-04-26T12:00:00Z',
+        updated_at: '2026-04-26T12:00:00Z',
+      });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mirrorApiMocks.mirrorGetUserSettings).toHaveBeenCalledTimes(1);
+    });
+    await user.click(screen.getByRole('button', { name: 'Theme' }));
+    await user.click(screen.getByRole('button', { name: /Theme synced|Live theme sync/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-app-shell')).toHaveStyle('--color-accent: #60e8bf');
+      expect(screen.getByText('Mint Neon on Emerald')).toBeInTheDocument();
+    });
   });
 
   it('opens the upload modal and adds a new clothing card', async () => {

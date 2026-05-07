@@ -73,6 +73,7 @@ import { useWardrobeActions } from './features/wardrobe/useWardrobeActions';
 
 type HttpSyncState = 'idle' | 'pulling' | 'pushing' | 'saved' | 'error';
 type ThemeSyncState = 'idle' | 'loading' | 'saving' | 'saved' | 'error';
+type CompanionThemeStyle = React.CSSProperties & Record<`--${string}`, string>;
 
 function layoutSyncLabel(mirrorHttpBase: string, httpSyncState: HttpSyncState): string {
   if (!mirrorHttpBase.trim()) return 'Local layout';
@@ -109,6 +110,26 @@ function parseHost(rawBase: string): string {
   } catch {
     return '';
   }
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const normalized = hex.trim().replace(/^#/, '');
+  const full =
+    normalized.length === 3
+      ? normalized.split('').map((char) => `${char}${char}`).join('')
+      : normalized;
+  if (!/^[0-9a-f]{6}$/i.test(full)) return null;
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16),
+  };
+}
+
+function rgbaFromHex(hex: string, alpha: number, fallback: string): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return fallback;
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
 }
 
 const SIZE_DROPDOWN_ITEMS: Array<{ id: WidgetSizePreset; label: string }> = [
@@ -476,6 +497,46 @@ export default function App() {
     () => filteredTemplates.map((tmpl) => ({ id: tmpl.id, label: tmpl.label })),
     [filteredTemplates]
   );
+  const selectedWidgetTheme = useMemo(
+    () => getWidgetThemePreset(selectedWidgetThemeId),
+    [selectedWidgetThemeId]
+  );
+  const selectedBackgroundTheme = useMemo(
+    () => getBackgroundThemePreset(selectedBackgroundThemeId),
+    [selectedBackgroundThemeId]
+  );
+  const companionThemeStyle = useMemo<CompanionThemeStyle>(() => {
+    const accent = selectedWidgetTheme.colors[0];
+    const accentStrong = selectedWidgetTheme.colors[1] ?? accent;
+    const backgroundStart = selectedBackgroundTheme.colors[0];
+    const backgroundEnd = selectedBackgroundTheme.colors[1] ?? backgroundStart;
+    const accentGlow = rgbaFromHex(accent, 0.35, 'rgba(94, 225, 217, 0.35)');
+    const accentSoft = rgbaFromHex(accent, 0.14, 'rgba(94, 225, 217, 0.14)');
+    const accentWash = rgbaFromHex(accent, 0.08, 'rgba(94, 225, 217, 0.08)');
+    const accentStrongWash = rgbaFromHex(accentStrong, 0.06, 'rgba(125, 243, 235, 0.06)');
+    const backgroundStartSolid = rgbaFromHex(backgroundStart, 0.92, 'rgba(3, 4, 9, 0.92)');
+    const backgroundStartDeep = rgbaFromHex(backgroundStart, 0.84, 'rgba(3, 4, 9, 0.84)');
+
+    return {
+      '--color-accent': accent,
+      '--color-accent-strong': accentStrong,
+      '--color-accent-glow': accentGlow,
+      '--theme-bg-start': backgroundStart,
+      '--theme-bg-end': backgroundEnd,
+      '--theme-bg-start-solid': backgroundStartSolid,
+      '--theme-bg-start-deep': backgroundStartDeep,
+      '--theme-accent-soft': accentSoft,
+      '--theme-selection-bg': accentSoft,
+      '--theme-wash-primary': accentWash,
+      '--theme-wash-secondary': accentStrongWash,
+      '--glass-bg': 'rgba(255, 255, 255, 0.065)',
+      '--glass-border': accentSoft,
+      '--glass-hover': 'rgba(255, 255, 255, 0.105)',
+      '--glow-widget': `0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px ${rgbaFromHex(accent, 0.08, 'rgba(255, 255, 255, 0.05)')}`,
+      '--glow-widget-hover': `0 12px 48px rgba(0, 0, 0, 0.5), 0 0 30px ${accentGlow}, 0 0 0 1px ${rgbaFromHex(accent, 0.18, 'rgba(255, 255, 255, 0.08)')}`,
+      background: `linear-gradient(135deg, ${backgroundStart}, ${backgroundEnd})`,
+    };
+  }, [selectedBackgroundTheme, selectedWidgetTheme]);
 
   useEffect(() => {
     if (!filteredTemplates.some((t) => t.id === customTemplateId)) {
@@ -1021,10 +1082,14 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white p-6 font-[var(--font-sans)] selection:bg-white/20 relative overflow-hidden">
+    <div
+      data-testid="companion-app-shell"
+      style={companionThemeStyle}
+      className="min-h-screen text-white p-6 font-[var(--font-sans)] selection:bg-[var(--theme-selection-bg)] relative overflow-hidden transition-colors duration-500"
+    >
       <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-0 left-0 w-[60%] h-[50%] bg-[radial-gradient(ellipse_at_20%_20%,rgba(94,225,217,0.06)_0%,transparent_70%)]" />
-        <div className="absolute bottom-0 right-0 w-[50%] h-[40%] bg-[radial-gradient(ellipse_at_80%_80%,rgba(96,165,250,0.04)_0%,transparent_60%)]" />
+        <div className="absolute top-0 left-0 w-[60%] h-[50%] bg-[radial-gradient(ellipse_at_20%_20%,var(--theme-wash-primary)_0%,transparent_70%)]" />
+        <div className="absolute bottom-0 right-0 w-[50%] h-[40%] bg-[radial-gradient(ellipse_at_80%_80%,var(--theme-wash-secondary)_0%,transparent_60%)]" />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_50%,rgba(0,0,0,0.4)_100%)]" />
       </div>
       <div className="relative z-10">
@@ -1032,8 +1097,8 @@ export default function App() {
       
       <header className="max-w-7xl mx-auto flex items-center justify-between mb-8 lg:mb-12">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-white/[0.06] backdrop-blur-sm border border-white/[0.08] flex items-center justify-center shadow-[0_4px_16px_rgba(0,0,0,0.3)]">
-            <Shirt size={20} className="text-white/70" />
+          <div className="w-10 h-10 rounded-full bg-[var(--theme-accent-soft)] backdrop-blur-sm border border-[var(--glass-border)] flex items-center justify-center shadow-[0_4px_16px_rgba(0,0,0,0.3)]">
+            <Shirt size={20} className="text-[var(--color-accent-strong)]" />
           </div>
           <div>
             <h1 className="text-xl font-medium tracking-tight font-[var(--font-display)]">Mirror Config</h1>
@@ -1070,7 +1135,7 @@ export default function App() {
               className={cn(
                 'px-4 py-2 rounded-full text-xs tracking-wide transition-all duration-200',
                 activeTab === tab.id
-                  ? 'bg-white text-black font-medium shadow-[0_2px_8px_rgba(255,255,255,0.15)]'
+                  ? 'bg-[var(--color-accent)] text-black font-medium shadow-[0_2px_14px_var(--color-accent-glow)]'
                   : 'text-white/50 hover:text-white/80 hover:bg-white/[0.04]'
               )}
             >
@@ -1553,8 +1618,16 @@ export default function App() {
         ) : activeTab === 'theme' ? (
           <section className="max-w-4xl mx-auto px-4 space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Theme</h2>
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[var(--theme-accent-soft)] border border-[var(--glass-border)] flex items-center justify-center">
+                  <Palette size={18} className="text-[var(--color-accent-strong)]" />
+                </div>
+                <div>
+                  <h2 className="text-xs uppercase tracking-[0.2em] text-white/40 font-semibold">Theme</h2>
+                  <p className="text-sm text-white/70">
+                    {selectedWidgetTheme.label} on {selectedBackgroundTheme.label}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
@@ -1576,39 +1649,6 @@ export default function App() {
               </button>
             </div>
 
-            <GlassCard className="space-y-4">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-white/8 border border-white/10 flex items-center justify-center">
-                  <Palette size={18} className="text-white/70" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-medium text-white/90">Live Preview</h3>
-                  <p className="text-xs text-white/35">
-                    {getWidgetThemePreset(selectedWidgetThemeId).label} on {getBackgroundThemePreset(selectedBackgroundThemeId).label}
-                  </p>
-                </div>
-              </div>
-              <div
-                className="relative h-44 overflow-hidden rounded-2xl border border-white/10"
-                style={{
-                  background: `radial-gradient(circle at 20% 20%, ${getWidgetThemePreset(selectedWidgetThemeId).colors[0]}26, transparent 42%), linear-gradient(135deg, ${getBackgroundThemePreset(selectedBackgroundThemeId).colors[0]}, ${getBackgroundThemePreset(selectedBackgroundThemeId).colors[1]})`,
-                }}
-              >
-                <div className="absolute left-5 top-5 w-36 rounded-xl border border-white/15 bg-black/35 p-4 shadow-[0_16px_44px_rgba(0,0,0,0.35)] backdrop-blur-md">
-                  <div
-                    className="h-2 w-16 rounded-full"
-                    style={{ backgroundColor: getWidgetThemePreset(selectedWidgetThemeId).colors[0] }}
-                  />
-                  <div className="mt-4 h-2 w-24 rounded-full bg-white/45" />
-                  <div className="mt-2 h-2 w-14 rounded-full bg-white/25" />
-                </div>
-                <div className="absolute bottom-5 right-5 w-28 rounded-xl border border-white/15 bg-black/30 p-4 backdrop-blur-md">
-                  <div className="h-8 w-8 rounded-full border border-white/20" style={{ backgroundColor: getWidgetThemePreset(selectedWidgetThemeId).colors[1] }} />
-                  <div className="mt-3 h-2 w-16 rounded-full bg-white/35" />
-                </div>
-              </div>
-            </GlassCard>
-
             <div className="grid gap-6 lg:grid-cols-2">
               <GlassCard className="space-y-4">
                 <div>
@@ -1623,7 +1663,7 @@ export default function App() {
                       className={cn(
                         'flex items-center justify-between rounded-xl border px-3 py-3 text-left transition-colors',
                         selectedWidgetThemeId === theme.id
-                          ? 'border-white/35 bg-white/12 text-white'
+                          ? 'border-[var(--color-accent)] bg-[var(--theme-accent-soft)] text-white shadow-[0_0_22px_var(--color-accent-glow)]'
                           : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-white hover:border-white/25'
                       )}
                     >
@@ -1654,7 +1694,7 @@ export default function App() {
                       className={cn(
                         'flex items-center justify-between rounded-xl border px-3 py-3 text-left transition-colors',
                         selectedBackgroundThemeId === theme.id
-                          ? 'border-white/35 bg-white/12 text-white'
+                          ? 'border-[var(--color-accent)] bg-[var(--theme-accent-soft)] text-white shadow-[0_0_22px_var(--color-accent-glow)]'
                           : 'border-white/10 bg-white/[0.03] text-white/65 hover:text-white hover:border-white/25'
                       )}
                     >
@@ -1723,9 +1763,12 @@ export default function App() {
             <div 
               ref={mirrorRef}
               className="relative w-full aspect-[9/16] bg-black border border-white/[0.08] rounded-[2.5rem] overflow-hidden group mx-auto max-w-[460px] shadow-[0_20px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.04)]"
+              style={{
+                background: `radial-gradient(ellipse at 25% 12%, ${rgbaFromHex(selectedWidgetTheme.colors[0], 0.1, 'rgba(94,225,217,0.1)')} 0%, transparent 44%), linear-gradient(135deg, ${selectedBackgroundTheme.colors[0]}, ${selectedBackgroundTheme.colors[1]})`,
+              }}
             >
               <div className="absolute inset-0 bg-gradient-to-br from-white/[0.03] via-transparent to-transparent pointer-events-none" />
-              <div className="absolute top-0 left-[15%] w-[40%] h-[30%] bg-[radial-gradient(ellipse,rgba(94,225,217,0.04)_0%,transparent_70%)] pointer-events-none" />
+              <div className="absolute top-0 left-[15%] w-[40%] h-[30%] bg-[radial-gradient(ellipse,var(--theme-wash-primary)_0%,transparent_70%)] pointer-events-none" />
               
               {widgets.map((widget) => (
                 <MirrorWidget 
@@ -1825,7 +1868,12 @@ export default function App() {
       </main>
 
       {/* Bottom Nav / Status */}
-      <div className="fixed bottom-0 inset-x-0 p-6 bg-gradient-to-t from-black via-black/80 to-transparent z-40">
+      <div
+        className="fixed bottom-0 inset-x-0 p-6 z-40"
+        style={{
+          background: `linear-gradient(to top, var(--theme-bg-start-solid) 0%, var(--theme-bg-start-deep) 58%, transparent 100%)`,
+        }}
+      >
         <div className="max-w-7xl mx-auto flex items-center justify-center lg:justify-end">
           <div className="px-5 py-2.5 bg-white/[0.04] backdrop-blur-2xl border border-white/[0.06] rounded-full flex items-center gap-4 shadow-[0_8px_24px_rgba(0,0,0,0.3)]">
              <div className="flex items-center gap-2">
