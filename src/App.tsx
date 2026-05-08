@@ -74,6 +74,24 @@ import { useWardrobeActions } from './features/wardrobe/useWardrobeActions';
 type HttpSyncState = 'idle' | 'pulling' | 'pushing' | 'saved' | 'error';
 type ThemeSyncState = 'idle' | 'loading' | 'saving' | 'saved' | 'error';
 type CompanionThemeStyle = React.CSSProperties & Record<`--${string}`, string>;
+type ActiveTab = 'layout' | 'theme' | 'wardrobe' | 'connection' | 'accounts';
+
+const ACTIVE_TAB_STORAGE_KEY = 'smart_mirror_companion_active_tab_v1';
+const ACTIVE_TABS: ActiveTab[] = ['layout', 'theme', 'wardrobe', 'accounts', 'connection'];
+
+function isActiveTab(value: string | null): value is ActiveTab {
+  return ACTIVE_TABS.includes(value as ActiveTab);
+}
+
+function loadActiveTab(): ActiveTab {
+  if (typeof window === 'undefined') return 'layout';
+  try {
+    const saved = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    return isActiveTab(saved) ? saved : 'layout';
+  } catch {
+    return 'layout';
+  }
+}
 
 function layoutSyncLabel(mirrorHttpBase: string, httpSyncState: HttpSyncState): string {
   if (!mirrorHttpBase.trim()) return 'Local layout';
@@ -448,9 +466,7 @@ const MirrorWidget: React.ComponentType<MirrorWidgetProps> = ({
 
 export default function App() {
   const sessionIdRef = useRef(createSessionId());
-  const [activeTab, setActiveTab] = useState<
-    'layout' | 'theme' | 'wardrobe' | 'connection' | 'accounts'
-  >('layout');
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => loadActiveTab());
   const [widgets, setWidgets] = useState<Widget[]>(() => {
     if (typeof window === 'undefined') return hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
     return loadLayoutCache() ?? hydrateWidgetsFromSnapshots(DEFAULT_WIDGET_SNAPSHOTS);
@@ -566,6 +582,14 @@ export default function App() {
       setCustomTemplateId(filteredTemplates[0]?.id ?? CUSTOM_WIDGET_TEMPLATES[0]?.id ?? 'sticky-note');
     }
   }, [filteredTemplates, customTemplateId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab);
+    } catch {
+      // Tab persistence is a convenience; ignore blocked storage.
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     if (!showSettings) return;
@@ -1148,25 +1172,19 @@ export default function App() {
 
       <nav className="max-w-7xl mx-auto mb-6">
         <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.04] backdrop-blur-sm p-1 gap-0.5 shadow-[0_4px_16px_rgba(0,0,0,0.2)]">
-          {[
-            { id: 'layout', label: 'Layout' },
-            { id: 'theme', label: 'Theme' },
-            { id: 'wardrobe', label: 'Wardrobe' },
-            { id: 'accounts', label: 'Accounts' },
-            { id: 'connection', label: 'Connection' },
-          ].map((tab) => (
+          {ACTIVE_TABS.map((tabId) => (
             <button
-              key={tab.id}
+              key={tabId}
               type="button"
-              onClick={() => setActiveTab(tab.id as typeof activeTab)}
+              onClick={() => setActiveTab(tabId)}
               className={cn(
                 'px-4 py-2 rounded-full text-xs tracking-wide transition-all duration-200',
-                activeTab === tab.id
+                activeTab === tabId
                   ? 'bg-[var(--color-accent)] text-black font-medium shadow-[0_2px_14px_var(--color-accent-glow)]'
                   : 'text-white/50 hover:text-white/80 hover:bg-white/[0.04]'
               )}
             >
-              {tab.label}
+              {tabId[0].toUpperCase() + tabId.slice(1)}
             </button>
           ))}
         </div>

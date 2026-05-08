@@ -138,6 +138,7 @@ import App from './App';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
 
   mirrorApiMocks.mirrorGetWidgets.mockResolvedValue([]);
   mirrorApiMocks.mirrorPutWidgets.mockResolvedValue([]);
@@ -202,6 +203,24 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Wardrobe' }));
     expect(await screen.findByAltText('Blue Shirt')).toBeInTheDocument();
     expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Mirror Screen' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the selected tab after the app mounts again', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Wardrobe' }));
+    await screen.findByText(/No wardrobe items yet/i);
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem('smart_mirror_companion_active_tab_v1')).toBe('wardrobe');
+    });
+
+    unmount();
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Wardrobe' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Mirror Screen' })).not.toBeInTheDocument();
   });
 
